@@ -24,18 +24,32 @@
 #include "crypto/aesni256.h"
 
 #include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 EVP_CIPHER_CTX *evp_cipher_ctx_init (const EVP_CIPHER *cipher, unsigned char *key, unsigned char iv[16], int is_encrypt) {
   EVP_CIPHER_CTX *evp_ctx = EVP_CIPHER_CTX_new();
   assert(evp_ctx);
 
-  assert(EVP_CipherInit(evp_ctx, cipher, key, iv, is_encrypt) == 1);
-  assert(EVP_CIPHER_CTX_set_padding(evp_ctx, 0) == 1);
+  if (EVP_CipherInit(evp_ctx, cipher, key, iv, is_encrypt) != 1) {
+    fprintf(stderr, "FATAL: EVP_CipherInit failed\n");
+    abort();
+  }
+  if (EVP_CIPHER_CTX_set_padding(evp_ctx, 0) != 1) {
+    fprintf(stderr, "FATAL: EVP_CIPHER_CTX_set_padding failed\n");
+    abort();
+  }
   return evp_ctx;
 }
 
 void evp_crypt (EVP_CIPHER_CTX *evp_ctx, const void *in, void *out, int size) {
   int len;
-  assert (EVP_CipherUpdate(evp_ctx, out, &len, in, size) == 1);
-  assert (len == size);
+  if (EVP_CipherUpdate(evp_ctx, out, &len, in, size) != 1) {
+    fprintf(stderr, "FATAL: EVP_CipherUpdate failed\n");
+    abort();
+  }
+  if (len != size) {
+    fprintf(stderr, "FATAL: EVP_CipherUpdate output length mismatch (%d != %d)\n", len, size);
+    abort();
+  }
 }

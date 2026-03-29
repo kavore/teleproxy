@@ -39,6 +39,9 @@
 #include "kprintf.h"
 #include "precise-time.h"
 
+#include <openssl/rand.h>
+#include <openssl/crypto.h>
+
 #include "net/net-crypto-aes.h"
 #include "net/net-config.h"
 
@@ -208,6 +211,7 @@ int aes_load_pwd_file (const char *filename) {
   
   memcpy (main_secret.secret, pwd_config_buf, r);
   main_secret.secret_len = r;
+  OPENSSL_cleanse (pwd_config_buf, sizeof (pwd_config_buf));
 
   aes_initialized = 1;
 
@@ -215,18 +219,11 @@ int aes_load_pwd_file (const char *filename) {
 }
 
 int aes_generate_nonce (char res[16]) {
-  *(int *)(rand_buf + 16) = lrand48_j ();
-  *(int *)(rand_buf + 20) = lrand48_j ();
-  *(long long *)(rand_buf + 24) = rdtsc ();
-  struct timespec T;
-  assert (clock_gettime(CLOCK_REALTIME, &T) >= 0);
-  *(int *)(rand_buf + 32) = T.tv_sec;
-  *(int *)(rand_buf + 36) = T.tv_nsec;
-  (*(int *)(rand_buf + 40))++;
-
-  md5 ((unsigned char *)rand_buf, 44, (unsigned char *)res);
+  if (RAND_bytes ((unsigned char *)res, 16) != 1) {
+    return -1;
+  }
   return 0;
-} 
+}
 
 
 // str := nonce_server.nonce_client.client_timestamp.server_ip.client_port.("SERVER"/"CLIENT").client_ip.server_port.master_key.nonce_server.[client_ipv6.server_ipv6].nonce_client
@@ -304,7 +301,7 @@ int aes_create_keys (struct aes_key_data *R, int am_client, const char nonce_ser
   sha1 (str, str_len, R->read_key + 12);
   md5 (str + 2, str_len - 2, R->read_iv);
 
-  memset (str, 0, str_len);
+  OPENSSL_cleanse (str, str_len);
 
   return 1;
 }
@@ -326,7 +323,7 @@ int is_valid_crypto_key_id (int x) {
 }
 
 void free_crypto_temp (void *crypto, int len) {
-  memset (crypto, 0, len);
+  OPENSSL_cleanse (crypto, len);
   free (crypto);
   MODULE_STAT->allocated_aes_crypto_temp --;
 }

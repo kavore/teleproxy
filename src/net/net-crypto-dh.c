@@ -35,6 +35,7 @@
 #include <unistd.h>
 #include <openssl/bn.h>
 #include <openssl/sha.h>
+#include <openssl/crypto.h>
 #include <openssl/rand.h>
 
 #include "crc32.h"
@@ -83,26 +84,20 @@ __thread BN_CTX *rpc_BN_ctx;
 
 
 static int is_good_rpc_dh_bin (const unsigned char *data) {
+  /* check data > 1 */
+  int all_zero = 1;
   int i;
-  int ok = 0;
-  for (i = 0; i < 8; i++) {
-    if (data[i]) {
-      ok = 1;
-      break;
-    }
+  for (i = 0; i < 255; i++) {
+    if (data[i]) { all_zero = 0; break; }
   }
-  if (!ok) {
-    return 0;
+  if (all_zero && data[255] <= 1) { return 0; }
+
+  /* check data < prime */
+  for (i = 0; i < 256; i++) {
+    if (data[i] < rpc_dh_prime_bin[i]) { return 1; }
+    if (data[i] > rpc_dh_prime_bin[i]) { return 0; }
   }
-  for (i = 0; i < 8; i++) {
-    if (data[i] > rpc_dh_prime_bin[i]) {
-      return 0;
-    }
-    if (data[i] < rpc_dh_prime_bin[i]) {
-      return 1;
-    }
-  }
-  return 0;
+  return 0; /* data == prime */
 }
 
 
@@ -142,12 +137,14 @@ int init_dh_params (void) {
 }
 
 
-void create_g_a (unsigned char g_a[256], unsigned char a[256]) {
+int create_g_a (unsigned char g_a[256], unsigned char a[256]) {
   if (!rpc_BN_ctx) {
     rpc_BN_ctx = BN_CTX_new ();
   }
   do {
-    assert (RAND_bytes (a, 256) >= 0); /* if you write '>0', the assert will fail. It's very sad */
+    if (RAND_bytes (a, 256) != 1) {
+      return -1;
+    }
 
     BIGNUM *dh_power = BN_new ();
     assert (BN_bin2bn (a, 256, dh_power) == dh_power);
@@ -157,18 +154,21 @@ void create_g_a (unsigned char g_a[256], unsigned char a[256]) {
 
     int len = BN_num_bytes (value);
     assert (len > 240 && len <= 256);
-  
+
     memset (g_a, 0, 256 - len);
     assert (BN_bn2bin (value, g_a + (256 - len)) == len);
 
-    BN_free (value);
+    BN_clear_free (value);
   } while (!is_good_rpc_dh_bin (g_a));
+  return 0;
 }
 
 
 int dh_first_round (unsigned char g_a[256], struct crypto_temp_dh_params *dh_params) {
   dh_params->dh_params_select = dh_params_select;
-  create_g_a (g_a, dh_params->a);
+  if (create_g_a (g_a, dh_params->a) < 0) {
+    return -1;
+  }
   dh_params->magic = CRYPTO_TEMP_DH_PARAMS_MAGIC;
   MODULE_STAT->tot_dh_rounds[0] ++;
   
@@ -189,7 +189,7 @@ static void dh_inner_round (unsigned char g_ab[256], const unsigned char g_b[256
   BIGNUM *key = BN_new ();
   assert (BN_mod_exp (key, dh_base, dh_power, rpc_dh_prime, rpc_BN_ctx) == 1);
   
-  BN_free (dh_base);
+  BN_clear_free (dh_base);
   BN_clear_free (dh_power);
 
   int len = BN_num_bytes (key);
@@ -209,11 +209,13 @@ int dh_second_round (unsigned char g_ab[256], unsigned char g_a[256], const unsi
     return 0;
   }
 
-  create_g_a (g_a, a);
+  if (create_g_a (g_a, a) < 0) {
+    return -1;
+  }
 
   dh_inner_round (g_ab, g_b, a);
 
-  memset (a, 0, sizeof (a));
+  OPENSSL_cleanse (a, sizeof (a));
 
   vkprintf (2, "DH key is %02x%02x%02x...%02x%02x%02x\n", g_ab[0], g_ab[1], g_ab[2], g_ab[253], g_ab[254], g_ab[255]);
   MODULE_STAT->tot_dh_rounds[1]++;
@@ -231,5 +233,6 @@ int dh_third_round (unsigned char g_ab[256], const unsigned char g_b[256], struc
   vkprintf (2, "DH key is %02x%02x%02x...%02x%02x%02x\n", g_ab[0], g_ab[1], g_ab[2], g_ab[253], g_ab[254], g_ab[255]);
   MODULE_STAT->tot_dh_rounds[2]++;
 
+  OPENSSL_cleanse (dh_params->a, 256);
   return 256;
 }
