@@ -183,6 +183,7 @@ int write_http_error_raw (connection_job_t C, struct raw_message *raw, int code)
 
 int write_http_error (connection_job_t C, int code) {
   struct raw_message *raw = calloc (sizeof (*raw), 1);
+  if (!raw) { return -1; }
   rwm_init (raw, 0);
   int r = write_http_error_raw (C, raw, code);
   
@@ -333,8 +334,8 @@ int hts_do_wakeup (connection_job_t c) {
  */
 
 #define        HTTP_DATE_LEN        29
-char now_date_string[] = "Thu, 01 Jan 1970 00:00:00 GMT";
-int now_date_utime;
+static __thread char now_date_string[] = "Thu, 01 Jan 1970 00:00:00 GMT";
+static __thread int now_date_utime;
 
 static char months [] = "JanFebMarAprMayJunJulAugSepOctNovDecGlk";
 static char dows [] = "SunMonTueWedThuFriSatEar";
@@ -508,10 +509,10 @@ int write_basic_http_header_raw (connection_job_t C, struct raw_message *raw, in
       gen_http_date (date_buff, date);
     }
     ptr += snprintf (ptr, B_SZ - 64, header_pattern, code, error_message,
-                     date ? date_buff : cur_http_date(), 
-                     content_type ? content_type : "text/html", 
-                     (D->query_flags & QF_KEEPALIVE) ? "keep-alive" : "close", 
-                     (D->query_flags & QF_EXTRA_HEADERS) && extra_http_response_headers ? extra_http_response_headers : "", 
+                     date ? date_buff : cur_http_date(),
+                     content_type ? content_type : "text/html",
+                     (D->query_flags & QF_KEEPALIVE) ? "keep-alive" : "close",
+                     (D->query_flags & QF_EXTRA_HEADERS) && extra_http_response_headers ? extra_http_response_headers : "",
                      add_header ?: "");
     D->query_flags &= ~QF_EXTRA_HEADERS;
     assert (ptr < buff + B_SZ - 64);

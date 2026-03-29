@@ -50,11 +50,8 @@ int signal_check_pending (int sig) {
 }
 
 int signal_check_pending_and_clear (int sig) {
-  int res = (pending_signals & SIG2INT(sig)) != 0;
-  if (res) {
-    __sync_fetch_and_and (&pending_signals, ~SIG2INT(sig));
-  }
-  return res;
+  unsigned long long old = __sync_fetch_and_and (&pending_signals, ~SIG2INT(sig));
+  return (old & SIG2INT(sig)) != 0;
 }
 /* }}} */
 

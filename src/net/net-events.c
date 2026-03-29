@@ -919,26 +919,25 @@ const char *conv_addr6 (const unsigned char a[16], char *buf) {
   return buf;
 }
 
-/* NB: show_ip and show_ipv6 use static rotating buffers -- not thread-safe.
-   Callers must not use results across threads or hold pointers long-term. */
+/* Thread-local rotating buffers for IP formatting */
 const char *show_ip (unsigned ip) {
-  static char abuf[256], *ptr = abuf;
-  char *res;
-  if (ptr > abuf + 200) {
+  static __thread char abuf[256];
+  static __thread char *ptr;
+  if (!ptr || ptr > abuf + 200) {
     ptr = abuf;
   }
-  res = ptr;
+  char *res = ptr;
   ptr += sprintf (ptr, "%d.%d.%d.%d", ip >> 24, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff) + 1;
   return res;
 }
 
 const char *show_ipv6 (const unsigned char ipv6[16]) {
-  static char abuf[256], *ptr = abuf;
-  char *res;
-  if (ptr > abuf + 200) {
+  static __thread char abuf[256];
+  static __thread char *ptr;
+  if (!ptr || ptr > abuf + 200) {
     ptr = abuf;
   }
-  res = ptr;
+  char *res = ptr;
   ptr += conv_ipv6_internal ((const unsigned short *) ipv6, ptr) + 1;
   return res;
 }

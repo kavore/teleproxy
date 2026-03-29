@@ -146,8 +146,8 @@ char stats_buff[STATS_BUFF_SIZE];
 
 
 // current HTTP query headers
-char cur_http_origin[1024], cur_http_referer[1024], cur_http_user_agent[1024];
-int cur_http_origin_len, cur_http_referer_len, cur_http_user_agent_len;
+static __thread char cur_http_origin[1024], cur_http_referer[1024], cur_http_user_agent[1024];
+static __thread int cur_http_origin_len, cur_http_referer_len, cur_http_user_agent_len;
 
 int check_conn_buffers (connection_job_t c);
 void lru_insert_conn (connection_job_t c);
@@ -643,6 +643,21 @@ void compute_stats_sum (void) {
  */
 
 
+/* Escape Prometheus label value: \ -> \\, " -> \", \n -> \\n */
+static void prom_escape_label (char *dst, int dstlen, const char *src) {
+  int i = 0;
+  for (; *src && i < dstlen - 2; src++) {
+    if (*src == '\\' || *src == '"') {
+      dst[i++] = '\\';
+    } else if (*src == '\n') {
+      if (i < dstlen - 3) { dst[i++] = '\\'; dst[i++] = 'n'; }
+      continue;
+    }
+    dst[i++] = *src;
+  }
+  dst[i] = '\0';
+}
+
 void mtfront_prepare_stats (stats_buffer_t *sb) {
   struct connections_stat conn;
   struct buffers_stat bufs;
@@ -1022,30 +1037,35 @@ void mtfront_prepare_prometheus_stats (stats_buffer_t *sb) {
       sb_printf (sb,
 	       "# HELP teleproxy_secret_connections Current connections per configured secret.\n"
 	       "# TYPE teleproxy_secret_connections gauge\n");
+      char _esc_label[256];
       for (_i = 0; _i < _sc; _i++) {
+        prom_escape_label (_esc_label, sizeof(_esc_label), tcp_rpcs_get_ext_secret_label (_i));
         sb_printf (sb, "teleproxy_secret_connections{secret=\"%s\"} %lld\n",
-	         tcp_rpcs_get_ext_secret_label (_i), S(per_secret_connections[_i]));
+	         _esc_label, S(per_secret_connections[_i]));
       }
       sb_printf (sb,
 	       "# HELP teleproxy_secret_connections_created_total Total connections per configured secret.\n"
 	       "# TYPE teleproxy_secret_connections_created_total counter\n");
       for (_i = 0; _i < _sc; _i++) {
+        prom_escape_label (_esc_label, sizeof(_esc_label), tcp_rpcs_get_ext_secret_label (_i));
         sb_printf (sb, "teleproxy_secret_connections_created_total{secret=\"%s\"} %lld\n",
-	         tcp_rpcs_get_ext_secret_label (_i), S(per_secret_connections_created[_i]));
+	         _esc_label, S(per_secret_connections_created[_i]));
       }
       sb_printf (sb,
 	       "# HELP teleproxy_secret_connection_limit Configured connection limit per secret (0=unlimited).\n"
 	       "# TYPE teleproxy_secret_connection_limit gauge\n");
       for (_i = 0; _i < _sc; _i++) {
+        prom_escape_label (_esc_label, sizeof(_esc_label), tcp_rpcs_get_ext_secret_label (_i));
         sb_printf (sb, "teleproxy_secret_connection_limit{secret=\"%s\"} %d\n",
-	         tcp_rpcs_get_ext_secret_label (_i), tcp_rpcs_get_ext_secret_limit (_i));
+	         _esc_label, tcp_rpcs_get_ext_secret_limit (_i));
       }
       sb_printf (sb,
 	       "# HELP teleproxy_secret_connections_rejected_total Connections rejected due to per-secret limit.\n"
 	       "# TYPE teleproxy_secret_connections_rejected_total counter\n");
       for (_i = 0; _i < _sc; _i++) {
+        prom_escape_label (_esc_label, sizeof(_esc_label), tcp_rpcs_get_ext_secret_label (_i));
         sb_printf (sb, "teleproxy_secret_connections_rejected_total{secret=\"%s\"} %lld\n",
-	         tcp_rpcs_get_ext_secret_label (_i), S(per_secret_connections_rejected[_i]));
+	         _esc_label, S(per_secret_connections_rejected[_i]));
       }
     }
   }
