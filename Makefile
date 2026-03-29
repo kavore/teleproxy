@@ -20,8 +20,8 @@ endif
 HOST_ARCH := $(shell arch)
 
 # Default CFLAGS and LDFLAGS
-COMMON_CFLAGS := -O3 -std=gnu11 -Wall -fno-strict-aliasing -fno-strict-overflow -fwrapv -DAES=1 -DCOMMIT=\"${COMMIT}\" -DVERSION=\"${VERSION}\" -D_GNU_SOURCE=1 -D_FILE_OFFSET_BITS=64 -Wno-array-bounds -Wno-implicit-function-declaration
-COMMON_LDFLAGS := -ggdb -rdynamic -lm -lrt -lcrypto -lz -lpthread
+COMMON_CFLAGS := -O3 -std=gnu11 -Wall -fno-strict-aliasing -fno-strict-overflow -fwrapv -DAES=1 -DCOMMIT=\"${COMMIT}\" -DVERSION=\"${VERSION}\" -D_GNU_SOURCE=1 -D_FILE_OFFSET_BITS=64 -Wno-array-bounds -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE
+COMMON_LDFLAGS := -ggdb -rdynamic -lm -lrt -lcrypto -lz -lpthread -pie -Wl,-z,relro,-z,now -Wl,-z,noexecstack
 
 # Auto-detect libunwind for stack traces on musl/Alpine (test/CI builds)
 LIBUNWIND_CFLAGS := $(shell pkg-config --cflags libunwind 2>/dev/null)

@@ -50,15 +50,17 @@ RUN curl --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2 \
     -fsSL https://core.telegram.org/getProxySecret -o /opt/teleproxy/proxy-secret
 
 # Create data directory for persistent config (proxy-multi.conf)
-RUN mkdir -p /opt/teleproxy/data
+RUN mkdir -p /opt/teleproxy/data \
+    && chown -R teleproxy:teleproxy /opt/teleproxy/data
 
 # Install cron job to refresh proxy-multi.conf from Telegram servers every 6 hours.
 # Prevents proxy from becoming unavailable due to stale DC configuration.
 # Output is redirected to PID 1's stdout so it appears in `docker logs`.
-# busybox crond reads /etc/crontabs/<user> (no user field in entry, unlike Ubuntu cron.d)
+# busybox crond reads /etc/crontabs/<user>
 COPY teleproxy-config-refresh.sh /opt/teleproxy/config-refresh.sh
 RUN chmod +x /opt/teleproxy/config-refresh.sh \
-    && echo '0 */6 * * * /opt/teleproxy/config-refresh.sh >> /proc/1/fd/1 2>> /proc/1/fd/2' >> /etc/crontabs/root
+    && mkdir -p /etc/crontabs \
+    && echo '0 */6 * * * /opt/teleproxy/config-refresh.sh >> /proc/1/fd/1 2>> /proc/1/fd/2' >> /etc/crontabs/teleproxy
 
 # Expose ports
 EXPOSE 443 8888
@@ -69,6 +71,9 @@ RUN chmod +x /opt/teleproxy/start.sh
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=60s \
     CMD curl -f http://localhost:8888/stats || exit 1
+
+# Run as non-root user
+USER teleproxy
 
 # Set entrypoint
 ENTRYPOINT ["/opt/teleproxy/start.sh"]
