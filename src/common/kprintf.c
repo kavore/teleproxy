@@ -82,16 +82,16 @@ int hexdump (const void *start, const void *end) {
       len = 16;
     }
     int p = 0;
-    p += sprintf (s + p, "%08x", (int) (ptr - (char *) start));
+    p += snprintf (s + p, sizeof(s) - p, "%08x", (int) (ptr - (char *) start));
     for (i = 0; i < 16; i++) {
-      s[p ++] = ' ';
+      if (p < (int)sizeof(s) - 1) { s[p ++] = ' '; }
       if (i == 8) {
-        s[p ++] = ' ';
+        if (p < (int)sizeof(s) - 1) { s[p ++] = ' '; }
       }
       if (i < len) {
-        p += sprintf (s + p, "%02x", (unsigned char) ptr[i]);
+        p += snprintf (s + p, sizeof(s) - p, "%02x", (unsigned char) ptr[i]);
       } else {
-        p += sprintf (s + p, "  ");
+        p += snprintf (s + p, sizeof(s) - p, "  ");
       }
     }
     s[p ++] = '\n';

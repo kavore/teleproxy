@@ -23,11 +23,19 @@
 */
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include "net/net-rpc-targets.h"
 #include "vv/vv-tree.h"
+
+/* Helper to create a stack-allocated fake rpc_target_job_t for tree lookups.
+   Uses a char buffer of the correct size instead of pointer arithmetic UB. */
+struct fake_rpc_target {
+  char prefix[offsetof (struct async_job, j_custom)];
+  struct rpc_target_info info;
+};
 //#include "net/net-rpc-common.h"
 //#include "net/net-rpc-server.h"
 #include "net/net-tcp-rpc-client.h"
@@ -114,18 +122,19 @@ void rpc_target_insert_conn (connection_job_t C) {
 
   assert_net_cpu_thread ();
   //st_update_host ();
-  struct rpc_target_info t;
-  t.PID = TCP_RPC_DATA(C)->remote_pid;
-  assert (t.PID.ip);
-  
-  vkprintf (2, "rpc_target_insert_conn: ip = " IP_PRINT_STR ", port = %d, fd = %d\n", IP_TO_PRINT (t.PID.ip), (int) t.PID.port, c->fd);
-  rpc_target_job_t fake_target = ((void *)&t) - offsetof (struct async_job, j_custom);
+  struct fake_rpc_target ft;
+  memset (&ft, 0, sizeof (ft));
+  ft.info.PID = TCP_RPC_DATA(C)->remote_pid;
+  assert (ft.info.PID.ip);
+
+  vkprintf (2, "rpc_target_insert_conn: ip = " IP_PRINT_STR ", port = %d, fd = %d\n", IP_TO_PRINT (ft.info.PID.ip), (int) ft.info.PID.port, c->fd);
+  rpc_target_job_t fake_target = (rpc_target_job_t)&ft;
 
   
   rpc_target_job_t SS = tree_lookup_ptr_rpc_target (rpc_target_tree, fake_target);
   
   if (!SS) {
-    SS = rpc_target_alloc (t.PID);
+    SS = rpc_target_alloc (ft.info.PID);
   }
 
   struct rpc_target_info *S = RPC_TARGET_INFO (SS);
@@ -156,20 +165,21 @@ void rpc_target_delete_conn (connection_job_t C) {
 
   assert_net_cpu_thread ();
   //st_update_host ();
-  struct rpc_target_info t;
-  t.PID = TCP_RPC_DATA(C)->remote_pid;
-  if (!t.PID.ip) {
-    t.PID.ip = PID.ip;
+  struct fake_rpc_target ft2;
+  memset (&ft2, 0, sizeof (ft2));
+  ft2.info.PID = TCP_RPC_DATA(C)->remote_pid;
+  if (!ft2.info.PID.ip) {
+    ft2.info.PID.ip = PID.ip;
   }
-  
-  vkprintf (2, "rpc_target_insert_conn: ip = " IP_PRINT_STR ", port = %d, fd = %d\n", IP_TO_PRINT (t.PID.ip), (int) t.PID.port, c->fd);
-  rpc_target_job_t fake_target = ((void *)&t) - offsetof (struct async_job, j_custom);
 
-  
+  vkprintf (2, "rpc_target_delete_conn: ip = " IP_PRINT_STR ", port = %d, fd = %d\n", IP_TO_PRINT (ft2.info.PID.ip), (int) ft2.info.PID.port, c->fd);
+  rpc_target_job_t fake_target = (rpc_target_job_t)&ft2;
+
+
   rpc_target_job_t SS = tree_lookup_ptr_rpc_target (rpc_target_tree, fake_target);
-  
+
   if (!SS) {
-    SS = rpc_target_alloc (t.PID);
+    SS = rpc_target_alloc (ft2.info.PID);
   }
 
   struct rpc_target_info *S = RPC_TARGET_INFO (SS);
@@ -193,11 +203,11 @@ void rpc_target_delete_conn (connection_job_t C) {
 
 rpc_target_job_t rpc_target_lookup (struct process_id *pid) {
   assert (pid);
-  struct rpc_target_info t;
-  t.PID = *pid;
-  if (!t.PID.ip) { t.PID.ip = PID.ip; }
-  rpc_target_job_t fake_target = ((void *)&t) - offsetof (struct async_job, j_custom);
-  assert (RPC_TARGET_INFO(fake_target) == &t);
+  struct fake_rpc_target ft3;
+  memset (&ft3, 0, sizeof (ft3));
+  ft3.info.PID = *pid;
+  if (!ft3.info.PID.ip) { ft3.info.PID.ip = PID.ip; }
+  rpc_target_job_t fake_target = (rpc_target_job_t)&ft3;
  
   int fast = this_job_thread && this_job_thread->thread_class == JC_ENGINE;
 

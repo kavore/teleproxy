@@ -50,6 +50,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
@@ -114,6 +115,11 @@ int change_user_group (const char *username, const char *groupname) {
 
     if (setuid (pw->pw_uid) < 0) {
       kprintf ("change_user_group: failed to assume identity of user %s\n", username);
+      return -1;
+    }
+    /* Verify privilege drop actually took effect */
+    if (geteuid () == 0 || getuid () == 0) {
+      kprintf ("change_user_group: FATAL: still running as root after setuid\n");
       return -1;
     }
   }
@@ -315,17 +321,24 @@ long long parse_memory_limit (const char *s) {
     usage ();
     exit (1);
   }
+  int shift = 0;
   switch (c | 0x20) {
     case ' ': break;
-    case 'k':  x <<= 10; break;
-    case 'm':  x <<= 20; break;
-    case 'g':  x <<= 30; break;
-    case 't':  x <<= 40; break;
-    default: 
-      kprintf ("Parsing limit fail. Unknown suffix '%c'.\n", c); 
+    case 'k':  shift = 10; break;
+    case 'm':  shift = 20; break;
+    case 'g':  shift = 30; break;
+    case 't':  shift = 40; break;
+    default:
+      kprintf ("Parsing limit fail. Unknown suffix '%c'.\n", c);
       usage ();
       exit (1);
   }
+  if (shift && (x > (LLONG_MAX >> shift) || x < (LLONG_MIN >> shift))) {
+    kprintf ("Parsing limit overflow: %s\n", s);
+    usage ();
+    exit (1);
+  }
+  x <<= shift;
   return x;
 }
 
@@ -698,6 +711,10 @@ int parse_one_option (int val) {
 }
 
 int parse_engine_options_long (int argc, char **argv) {
+  if (argc > MAX_ENGINE_OPTIONS) {
+    kprintf ("FATAL: too many arguments (%d > %d)\n", argc, MAX_ENGINE_OPTIONS);
+    _exit (1);
+  }
   engine_options_num = argc;
   memcpy ((void *)engine_options, argv, sizeof (void *) * argc);
 

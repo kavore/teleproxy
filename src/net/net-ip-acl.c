@@ -22,6 +22,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <arpa/inet.h>
+#include <unistd.h>
 
 #include "net/net-ip-acl.h"
 #include "common/kprintf.h"
@@ -41,26 +42,44 @@ struct ip_acl {
   int capacity;
 };
 
-static struct ip_acl *current_blocklist;
-static struct ip_acl *current_allowlist;
+static struct ip_acl * volatile current_blocklist;
+static struct ip_acl * volatile current_allowlist;
 static struct ip_acl *stats_allowlist;
 static char *blocklist_file;
 static char *allowlist_file;
 
 void ip_acl_set_blocklist_file (const char *path) {
   free (blocklist_file);
-  blocklist_file = strdup (path);
+  blocklist_file = path ? strdup (path) : NULL;
+  if (path && !blocklist_file) { kprintf ("ip_acl: strdup failed for blocklist path\n"); }
 }
 
 void ip_acl_set_allowlist_file (const char *path) {
   free (allowlist_file);
-  allowlist_file = strdup (path);
+  allowlist_file = path ? strdup (path) : NULL;
+  if (path && !allowlist_file) { kprintf ("ip_acl: strdup failed for allowlist path\n"); }
 }
 
 static void ip_acl_free (struct ip_acl *acl) {
   if (acl) {
     free (acl->rules);
     free (acl);
+  }
+}
+
+/* Deferred free list: old ACLs freed after a grace period so readers
+   that already loaded the pointer can finish without use-after-free. */
+#define ACL_DEFER_SLOTS 4
+static struct ip_acl * volatile acl_defer_list[ACL_DEFER_SLOTS];
+static int acl_defer_pos;
+
+static void acl_defer_free (struct ip_acl *old) {
+  if (!old) return;
+  struct ip_acl *very_old = acl_defer_list[acl_defer_pos];
+  acl_defer_list[acl_defer_pos] = old;
+  acl_defer_pos = (acl_defer_pos + 1) % ACL_DEFER_SLOTS;
+  if (very_old) {
+    ip_acl_free (very_old);
   }
 }
 
@@ -350,14 +369,15 @@ int ip_acl_reload (void) {
     }
   }
 
-  /* swap atomically */
+  /* swap with deferred free: old ACLs are kept alive for a grace period
+     so concurrent readers (ip_acl_check_v4/v6) don't hit use-after-free */
   struct ip_acl *old_bl = current_blocklist;
   struct ip_acl *old_al = current_allowlist;
   if (new_bl) { __sync_synchronize (); current_blocklist = new_bl; }
   if (new_al) { __sync_synchronize (); current_allowlist = new_al; }
   __sync_synchronize ();
-  if (new_bl) { ip_acl_free (old_bl); }
-  if (new_al) { ip_acl_free (old_al); }
+  if (new_bl) { acl_defer_free ((struct ip_acl *)old_bl); }
+  if (new_al) { acl_defer_free ((struct ip_acl *)old_al); }
 
   return 0;
 }

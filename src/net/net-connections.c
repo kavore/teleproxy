@@ -595,7 +595,7 @@ connection_job_t alloc_new_connection (int cfd, conn_target_job_t CTJ, listening
   struct listening_connection_info *LC = LCJ ? LISTEN_CONN_INFO (LCJ) : NULL;
 
   unsigned flags;
-  if ((flags = fcntl (cfd, F_GETFL, 0) < 0) || fcntl (cfd, F_SETFL, flags | O_NONBLOCK) < 0) {
+  if (((flags = fcntl (cfd, F_GETFL, 0)) < 0) || fcntl (cfd, F_SETFL, flags | O_NONBLOCK) < 0) {
     kprintf ("cannot set O_NONBLOCK on accepted socket #%d: %m\n", cfd);
     MODULE_STAT->accept_nonblock_set_failed ++;
     close (cfd);

@@ -92,7 +92,7 @@ int insert_event_timer (event_timer_t *et) {
     assert (i > 0 && i <= et_heap_size && et_heap[i] == et);
   } else {
     MODULE_STAT->total_timers ++;
-    assert (et_heap_size < MAX_EVENT_TIMERS);
+    assert (et_heap_size < MAX_EVENT_TIMERS - 1);
     i = ++et_heap_size;
   }
   return basic_et_adjust (et, i);
