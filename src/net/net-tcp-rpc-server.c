@@ -206,8 +206,11 @@ static int tcp_rpcs_process_nonce_packet (connection_job_t C, struct raw_message
       return -5;
     }
     D->nonce_time = (now ? now : time (0));
-    if (abs (P.s.crypto_ts - D->nonce_time) > 30) {
-      return -6;	//less'om
+    {
+      int diff = P.s.crypto_ts - D->nonce_time;
+      if (diff < -30 || diff > 30) {
+        return -6;	//less'om
+      }
     }
     D->crypto_flags &= ~RPCF_ALLOW_UNENC;
     break;

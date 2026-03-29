@@ -201,8 +201,11 @@ static int tcp_rpcc_process_nonce_packet (connection_job_t C, struct raw_message
     if (!(D->crypto_flags & RPCF_ALLOW_ENC)) {
       return -5;
     }
-    if (abs (P.s.crypto_ts - D->nonce_time) > 30) {
-      return -6; 
+    {
+      int diff = P.s.crypto_ts - D->nonce_time;
+      if (diff < -30 || diff > 30) {
+        return -6;
+      }
     }
     if ((D->crypto_flags & (RPCF_REQ_DH | RPCF_ALLOW_SKIP_DH)) == RPCF_REQ_DH && !dh) {
       return -7;

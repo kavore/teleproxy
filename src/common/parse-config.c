@@ -19,6 +19,7 @@
 */
 
 #include <assert.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -107,6 +108,7 @@ long long cfg_getint (void) {
   char *s = cfg_cur;
   long long x = 0;
   while (*s >= '0' && *s <= '9') {
+    if (x > LLONG_MAX / 10) { return LLONG_MAX; }
     x = x * 10 + *(s ++) - '0';
   }
   cfg_cur = s;
@@ -118,6 +120,7 @@ long long cfg_getint_zero (void) {
   char *s = cfg_cur;
   long long x = 0;
   while (*s >= '0' && *s <= '9') {
+    if (x > LLONG_MAX / 10) { return LLONG_MAX; }
     x = x * 10 + *(s ++) - '0';
   }
   if (cfg_cur == s) {
@@ -138,6 +141,7 @@ long long cfg_getint_signed_zero (void) {
     ++s;
   }
   while (*s >= '0' && *s <= '9') {
+    if (x > LLONG_MAX / 10 || x < LLONG_MIN / 10) { return (sgn > 0) ? LLONG_MAX : LLONG_MIN; }
     x = x * 10 + sgn * (*(s++) - '0');
   }
   if (s == cfg_cur + (sgn < 0)) {
@@ -241,21 +245,25 @@ int load_config (const char *file, int fd) {
     config_buff = malloc (MAX_CONFIG_SIZE+4);
     assert (config_buff);
   }
+  int opened_here = 0;
   if (fd < 0) {
     fd = open (file, O_RDONLY);
     if (fd < 0) {
       fprintf (stderr, "Can not open file %s: %m\n", file);
       return -1;
     }
+    opened_here = 1;
   }
   int r;
   config_bytes = r = read (fd, config_buff, MAX_CONFIG_SIZE + 1);
   if (r < 0) {
     fprintf (stderr, "error reading configuration file %s: %m\n", config_name);
+    if (opened_here) { close (fd); }
     return -2;
   }
   if (r > MAX_CONFIG_SIZE) {
     fprintf (stderr, "configuration file %s too long (max %d bytes)\n", config_name, MAX_CONFIG_SIZE);
+    if (opened_here) { close (fd); }
     return -2;
   }
   if (config_name) {

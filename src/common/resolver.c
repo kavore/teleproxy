@@ -259,25 +259,29 @@ static int parse_hosts (struct resolver_conf *R, char *data, int mode) {
 
 
 static int kdb_load_hosts_internal (void) {
-  static struct stat s;
+  struct stat s;
   long long r;
   int fd;
   char *data;
 
-  if (stat (HOSTS_FILE, &s) < 0) {
+  fd = open (HOSTS_FILE, O_RDONLY);
+  if (fd < 0) {
+    return Hosts_new.hosts_loaded = -1;
+  }
+  if (fstat (fd, &s) < 0) {
+    close (fd);
     return Hosts_new.hosts_loaded = -1;
   }
   if (!S_ISREG (s.st_mode)) {
+    close (fd);
     return Hosts_new.hosts_loaded = -1;
   }
   if (Hosts.hosts_loaded > 0 && Hosts.fsize == s.st_size && Hosts.ftime == s.st_mtime) {
+    close (fd);
     return 0;
   }
   if (s.st_size >= MAX_HOSTS_SIZE) {
-    return Hosts_new.hosts_loaded = -1;
-  }
-  fd = open (HOSTS_FILE, O_RDONLY);
-  if (fd < 0) {
+    close (fd);
     return Hosts_new.hosts_loaded = -1;
   }
   Hosts_new.fsize = s.st_size;
