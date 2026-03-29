@@ -101,8 +101,7 @@ void fetch_buffers_stat (struct buffers_stat *bs);
 
 int free_msg_buffer (struct msg_buffer *X);
 static inline void msg_buffer_decref (struct msg_buffer *buffer) {
-  if (buffer->refcnt == 1 || __sync_fetch_and_add (&buffer->refcnt, -1) == 1) {
-    buffer->refcnt = 0;
+  if (__sync_fetch_and_add (&buffer->refcnt, -1) == 1) {
     free_msg_buffer (buffer);
   }
 }

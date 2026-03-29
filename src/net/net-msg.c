@@ -97,12 +97,8 @@ static int msg_part_decref (struct msg_part *mp) /* {{{ */{
   int cnt = 0;
   while (mp) {
     check_msg_part_magic (mp);
-    if (mp->refcnt == 1) {
-      mp->refcnt = 0;
-    } else {
-      if (__sync_fetch_and_add (&mp->refcnt, -1) > 1) {
-        break;
-      }
+    if (__sync_fetch_and_add (&mp->refcnt, -1) > 1) {
+      break;
     }
   
     assert (mp->magic == MSG_PART_MAGIC);
@@ -343,11 +339,7 @@ void rwm_clone (struct raw_message *dest_raw, struct raw_message *src_raw) /* {{
   assert (src_raw->magic == RM_INIT_MAGIC || src_raw->magic == RM_TMP_MAGIC);
   memcpy (dest_raw, src_raw, sizeof (struct raw_message));
   if (src_raw->magic == RM_INIT_MAGIC && src_raw->first) {
-    if (src_raw->first->refcnt == 1) {
-      src_raw->first->refcnt ++;
-    } else {
-      __sync_fetch_and_add (&src_raw->first->refcnt, 1);
-    }
+    __sync_fetch_and_add (&src_raw->first->refcnt, 1);
   }
   MODULE_STAT->rwm_total_msgs ++;
 }
@@ -1173,16 +1165,11 @@ int rwm_get_block_ptr_bytes (struct raw_message *raw) {
     }    
     
     assert (mp != raw->last);
-    if (mp->refcnt == 1) {
-      raw->first = mp->next;
-      mp->next = NULL;
-    } else {
-      raw->first = mp->next;
-      __sync_fetch_and_add (&mp->next->refcnt, 1);
-    }
+    raw->first = mp->next;
+    __sync_fetch_and_add (&mp->next->refcnt, 1);
     msg_part_decref (mp);
     raw->first_offset = raw->first->offset;
-    mp = mp->next;
+    mp = raw->first;
   }
 }
 

@@ -84,7 +84,7 @@ struct msg_buffers_chunk ChunkHeaders[MAX_BUFFER_SIZE_VALUES];
 __thread struct msg_buffers_chunk *ChunkSave[MAX_BUFFER_SIZE_VALUES];
 
 int default_buffer_sizes[] = { 48, 512, 2048, 16384, 262144 };
-int default_buffer_sizes_cnt = sizeof (default_buffer_sizes) / 4;
+int default_buffer_sizes_cnt = sizeof (default_buffer_sizes) / sizeof (default_buffer_sizes[0]);
 
 int free_std_msg_buffer (struct msg_buffers_chunk *C, struct msg_buffer *X);
 
@@ -127,6 +127,7 @@ static void lock_chunk_head (struct msg_buffers_chunk *CH) {
 }
 
 static void unlock_chunk_head (struct msg_buffers_chunk *CH) {
+  __sync_synchronize ();
   CH->magic = MSG_CHUNK_HEAD_MAGIC;
 }
 
