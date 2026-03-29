@@ -131,7 +131,6 @@ conn_type_t ct_proxy_pass = {
   .connected = tcp_proxy_pass_connected,
   .close = tcp_proxy_pass_close,
   .write_packet = tcp_proxy_pass_write_packet,
-  .connected = server_noop,
 };
 
 static int tcp_proxy_pass_unix_connected (connection_job_t C);
@@ -164,6 +163,7 @@ int tcp_proxy_pass_parse_execute (connection_job_t C) {
   struct connection_info *e = CONN_INFO(E);
 
   struct raw_message *r = malloc (sizeof (*r));
+  if (!r) { fail_connection (C, -1); job_decref (JOB_REF_PASS (E)); return 0; }
   rwm_move (r, &c->in);
   rwm_init (&c->in, 0);
   vkprintf (3, "proxying %d bytes to %s:%d\n", r->total_bytes, show_remote_ip (E), e->remote_port);
@@ -287,6 +287,7 @@ static int tcp_direct_relay (connection_job_t C) {
   struct connection_info *e = CONN_INFO(E);
 
   struct raw_message *r = malloc (sizeof (*r));
+  if (!r) { fail_connection (C, -1); job_decref (JOB_REF_PASS (E)); return 0; }
   rwm_move (r, &c->in);
   rwm_init (&c->in, 0);
   vkprintf (3, "direct relay %d bytes to %s:%d\n", r->total_bytes, show_remote_ip (E), e->remote_port);
@@ -307,11 +308,14 @@ static int tcp_direct_client_parse_execute (connection_job_t C) {
   }
   /* Don't relay until the DC connection has sent its obfuscated2 init.
      The connected callback sets crypto when it's done and signals us. */
-  struct connection_info *dc = CONN_INFO((connection_job_t) c->extra);
+  job_t EJ = job_incref (c->extra);
+  struct connection_info *dc = CONN_INFO(EJ);
   if (!dc->crypto) {
     vkprintf (2, "direct client: DC not ready yet, deferring %d bytes\n", c->in.total_bytes);
+    job_decref (JOB_REF_PASS (EJ));
     return NEED_MORE_BYTES;
   }
+  job_decref (JOB_REF_PASS (EJ));
   return tcp_direct_relay (C);
 }
 
@@ -748,8 +752,9 @@ static const struct domain_info *get_domain_info (const char *domain, size_t len
 
 static int get_domain_server_hello_encrypted_size (const struct domain_info *info) {
   if (info->use_random_encrypted_size) {
-    int r = rand();
-    return info->server_hello_encrypted_size + ((r >> 1) & 1) - (r & 1);
+    unsigned char rb;
+    RAND_bytes (&rb, 1);
+    return info->server_hello_encrypted_size + ((rb >> 1) & 1) - (rb & 1);
   } else {
     return info->server_hello_encrypted_size;
   }
@@ -880,6 +885,7 @@ static void add_public_key (unsigned char *str, int *pos) {
 
 static unsigned char *create_request (const char *domain) {
   unsigned char *result = malloc (TLS_REQUEST_LENGTH);
+  if (!result) { return NULL; }
   int pos = 0;
 
 #define MAX_GREASE 7
@@ -978,10 +984,12 @@ static int update_domain_info (struct domain_info *info) {
     sockets[i] = socket (af, SOCK_STREAM, IPPROTO_TCP);
     if (sockets[i] < 0) {
       kprintf ("Failed to open socket for %s: %s\n", domain, strerror (errno));
+      for (int j = 0; j < i; j++) { close (sockets[j]); }
       return 0;
     }
     if (fcntl (sockets[i], F_SETFL, O_NONBLOCK) == -1) {
       kprintf ("Failed to make socket non-blocking: %s\n", strerror (errno));
+      for (int j = 0; j <= i; j++) { close (sockets[j]); }
       return 0;
     }
 
@@ -1017,6 +1025,7 @@ static int update_domain_info (struct domain_info *info) {
 
     if (e_connect == -1 && errno != EINPROGRESS) {
       kprintf ("Failed to connect to %s: %s\n", domain, strerror (errno));
+      for (int j = 0; j <= i; j++) { close (sockets[j]); }
       return 0;
     }
   }
@@ -1109,6 +1118,11 @@ static int update_domain_info (struct domain_info *info) {
               is_encrypted_application_data_length_read[i] = 1;
               int encrypted_application_data_length = responses[i][response_len[i] - 2] * 256 + responses[i][response_len[i] - 1];
               response_len[i] += encrypted_application_data_length;
+              if (response_len[i] > (1 << 18)) {  /* 256KB limit */
+                kprintf ("Response from %s too large (%d bytes)\n", domain, response_len[i]);
+                have_error = 1;
+                break;
+              }
               unsigned char *new_buffer = realloc (responses[i], response_len[i]);
               assert (new_buffer != NULL);
               responses[i] = new_buffer;
@@ -1127,7 +1141,15 @@ static int update_domain_info (struct domain_info *info) {
               responses[i] = new_buf;
               memcpy (responses[i] + response_len[i], extra_buf, extra);
               response_len[i] += extra;
+              if (response_len[i] > (1 << 18)) {  /* 256KB limit */
+                kprintf ("Response from %s too large (%d bytes)\n", domain, response_len[i]);
+                have_error = 1;
+                break;
+              }
               read_pos[i] = response_len[i];
+            }
+            if (have_error) {
+              break;
             }
 
             int is_reversed_extension_order = -1;
@@ -1321,7 +1343,9 @@ void tcp_rpc_init_proxy_domains() {
         // keep target addresses as is
         info->is_reversed_extension_order = 0;
         info->use_random_encrypted_size = 1;
-        info->server_hello_encrypted_size = 2500 + rand() % 1120;
+        unsigned char rnd[2];
+        RAND_bytes (rnd, 2);
+        info->server_hello_encrypted_size = 2500 + ((rnd[0] * 256 + rnd[1]) % 1120);
       }
 
       info = info->next;
@@ -1468,7 +1492,7 @@ static int have_client_random (unsigned char random[16]) {
   int bid = get_bucket_id (random);
   int cur = replay_cache->buckets[bid];
   while (cur != REPLAY_NIL) {
-    if (memcmp (random, replay_cache->pool[cur].random, 16) == 0) {
+    if (CRYPTO_memcmp (random, replay_cache->pool[cur].random, 16) == 0) {
       return 1;
     }
     cur = replay_cache->pool[cur].next_by_hash;
@@ -1831,7 +1855,7 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
         }
 
         int read_len = len <= 4096 ? len : 4096;
-        unsigned char client_hello[read_len + 1]; // VLA
+        unsigned char client_hello[4097];
         assert (rwm_fetch_lookup (&c->in, client_hello, read_len) == read_len);
 
         const struct domain_info *info = get_sni_domain_info (client_hello, read_len);
@@ -1954,6 +1978,7 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
         memcpy (response_buffer + 11, server_random, 32);
 
         struct raw_message *m = calloc (sizeof (struct raw_message), 1);
+        if (!m) { free (buffer); fail_connection (C, -1); return 0; }
         rwm_create (m, response_buffer, response_size);
         mpq_push_w (c->out_queue, m, 0);
         job_signal (JOB_REF_CREATE_PASS (C), JS_RUN);
@@ -2171,6 +2196,12 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
         packet_len_bytes = 1;
       }
       packet_len <<= 2;
+    }
+
+    if (packet_len > (1 << 24)) {  /* 16MB hard limit */
+      vkprintf (1, "packet length %d exceeds hard limit\n", packet_len);
+      fail_connection (C, -1);
+      return 0;
     }
 
     if (packet_len <= 0 || (packet_len & 0xc0000000) || (!(D->flags & RPC_F_PAD) && (packet_len & 3))) {
