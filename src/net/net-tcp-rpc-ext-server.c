@@ -64,6 +64,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+extern char *unix_target_path;
+extern int proxy_protocol_enabled;
+
 /*
  *
  *                EXTERNAL RPC SERVER INTERFACE
@@ -131,6 +134,20 @@ conn_type_t ct_proxy_pass = {
   .connected = server_noop,
 };
 
+static int tcp_proxy_pass_unix_connected (connection_job_t C);
+
+/* Unix socket variant of proxy pass: logs unix connection events */
+conn_type_t ct_proxy_pass_unix = {
+  .magic = CONN_FUNC_MAGIC,
+  .flags = C_RAWMSG,
+  .title = "proxypass_unix",
+  .init_accepted = server_failed,
+  .parse_execute = tcp_proxy_pass_parse_execute,
+  .connected = tcp_proxy_pass_unix_connected,
+  .close = tcp_proxy_pass_close,
+  .write_packet = tcp_proxy_pass_write_packet,
+};
+
 int tcp_proxy_pass_connected (connection_job_t C) {
   struct connection_info *c = CONN_INFO(C);
   vkprintf (1, "proxy pass connected #%d %s:%d -> %s:%d\n", c->fd, show_our_ip (C), c->our_port, show_remote_ip (C), c->remote_port);
@@ -168,6 +185,15 @@ int tcp_proxy_pass_close (connection_job_t C, int who) {
 
 int tcp_proxy_pass_write_packet (connection_job_t C, struct raw_message *raw) {
   rwm_union (&CONN_INFO(C)->out, raw);
+  return 0;
+}
+
+/* Called when proxy_pass Unix socket connection is established.
+   Sends PROXY protocol v1 header if enabled, then flushes any pending data. */
+static int tcp_proxy_pass_unix_connected (connection_job_t C) {
+  struct connection_info *c = CONN_INFO(C);
+  vkprintf (1, "proxy pass unix connected #%d to %s\n", c->fd,
+            unix_target_path ? unix_target_path : "(unknown)");
   return 0;
 }
 
@@ -1519,32 +1545,49 @@ static int proxy_connection (connection_job_t C, const struct domain_info *info)
   TCP_RPC_DATA(C)->extra_int2 = 0;
 
   assert (check_conn_functions (&ct_proxy_pass, 0) >= 0);
+  assert (check_conn_functions (&ct_proxy_pass_unix, 0) >= 0);
 
-  const char zero[16] = {};
-  if (info->target.s_addr == 0 && !memcmp (info->target_ipv6, zero, 16)) {
-    vkprintf (0, "failed to proxy request to %s\n", info->domain);
-    fail_connection (C, -17);
-    return 0;
+  int use_unix = (unix_target_path != NULL);
+
+  if (!use_unix) {
+    const char zero[16] = {};
+    if (info->target.s_addr == 0 && !memcmp (info->target_ipv6, zero, 16)) {
+      vkprintf (0, "failed to proxy request to %s\n", info->domain);
+      fail_connection (C, -17);
+      return 0;
+    }
   }
 
   int port = c->our_port == 80 ? 80 : info->port;
 
   int cfd = -1;
-  if (info->target.s_addr) {
+  if (use_unix) {
+    cfd = client_socket_unix (unix_target_path);
+  } else if (info->target.s_addr) {
     cfd = client_socket (info->target.s_addr, port, 0);
   } else {
     cfd = client_socket_ipv6 (info->target_ipv6, port, SM_IPV6);
   }
 
   if (cfd < 0) {
-    kprintf ("failed to create proxy pass connection: %d (%m)", errno);
+    if (use_unix) {
+      kprintf ("failed to create proxy pass connection to unix:%s: %d (%m)\n", unix_target_path, errno);
+    } else {
+      kprintf ("failed to create proxy pass connection: %d (%m)\n", errno);
+    }
     fail_connection (C, -27);
     return 0;
   }
 
   c->type->crypto_free (C);
-  job_incref (C); 
-  job_t EJ = alloc_new_connection (cfd, NULL, NULL, ct_outbound, &ct_proxy_pass, C, ntohl (*(int *)&info->target.s_addr), (void *)info->target_ipv6, port); 
+  job_incref (C);
+
+  job_t EJ;
+  if (use_unix) {
+    EJ = alloc_new_connection (cfd, NULL, NULL, ct_outbound, &ct_proxy_pass_unix, C, 0, NULL, 0);
+  } else {
+    EJ = alloc_new_connection (cfd, NULL, NULL, ct_outbound, &ct_proxy_pass, C, ntohl (*(int *)&info->target.s_addr), (void *)info->target_ipv6, port);
+  }
 
   if (!EJ) {
     kprintf ("failed to create proxy pass connection (2)");
@@ -1555,7 +1598,73 @@ static int proxy_connection (connection_job_t C, const struct domain_info *info)
 
   c->type = &ct_proxy_pass;
   c->extra = job_incref (EJ);
-      
+
+  /* For unix target: write PROXY protocol header directly to the outbound connection's
+     output buffer BEFORE any relay data. This ensures correct ordering because
+     unix socket connect() is instant (no EINPROGRESS), so we can write immediately. */
+  if (use_unix && proxy_protocol_enabled == 1) {
+    /* PROXY protocol v1 (text) */
+    struct connection_info *ej = CONN_INFO(EJ);
+    char header[256];
+    int len;
+
+    if (c->flags & C_IPV6) {
+      char src_buf[INET6_ADDRSTRLEN], dst_buf[INET6_ADDRSTRLEN];
+      inet_ntop (AF_INET6, c->remote_ipv6, src_buf, sizeof (src_buf));
+      inet_ntop (AF_INET6, c->our_ipv6, dst_buf, sizeof (dst_buf));
+      len = snprintf (header, sizeof (header), "PROXY TCP6 %s %s %u %u\r\n",
+                      src_buf, dst_buf, c->remote_port, c->our_port);
+    } else {
+      struct in_addr src_addr, dst_addr;
+      char src_buf[INET_ADDRSTRLEN], dst_buf[INET_ADDRSTRLEN];
+      src_addr.s_addr = htonl (c->remote_ip);
+      dst_addr.s_addr = htonl (c->our_ip);
+      inet_ntop (AF_INET, &src_addr, src_buf, sizeof (src_buf));
+      inet_ntop (AF_INET, &dst_addr, dst_buf, sizeof (dst_buf));
+      len = snprintf (header, sizeof (header), "PROXY TCP4 %s %s %u %u\r\n",
+                      src_buf, dst_buf, c->remote_port, c->our_port);
+    }
+
+    if (len > 0 && len < (int)sizeof (header)) {
+      rwm_push_data (&ej->out, header, len);
+      vkprintf (1, "PROXY protocol v1: %.*s\n", len - 2, header);
+    }
+  } else if (use_unix && proxy_protocol_enabled == 2) {
+    /* PROXY protocol v2 (binary) */
+    struct connection_info *ej = CONN_INFO(EJ);
+    static const unsigned char v2_sig[12] = {
+      0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A
+    };
+    unsigned char header[52]; /* max: 16 hdr + 36 ipv6 addrs */
+    int len;
+
+    memcpy (header, v2_sig, 12);
+    header[12] = 0x21; /* version 2, command PROXY */
+
+    if (c->flags & C_IPV6) {
+      header[13] = 0x21; /* AF_INET6, STREAM */
+      header[14] = 0;    /* addr len high byte */
+      header[15] = 36;   /* addr len: 2*16 + 2*2 */
+      memcpy (header + 16, c->remote_ipv6, 16);
+      memcpy (header + 32, c->our_ipv6, 16);
+      *(unsigned short *)(header + 48) = htons ((unsigned short)c->remote_port);
+      *(unsigned short *)(header + 50) = htons ((unsigned short)c->our_port);
+      len = 52;
+    } else {
+      header[13] = 0x11; /* AF_INET, STREAM */
+      header[14] = 0;    /* addr len high byte */
+      header[15] = 12;   /* addr len: 2*4 + 2*2 */
+      *(unsigned *)(header + 16) = htonl (c->remote_ip);
+      *(unsigned *)(header + 20) = htonl (c->our_ip);
+      *(unsigned short *)(header + 24) = htons ((unsigned short)c->remote_port);
+      *(unsigned short *)(header + 26) = htons ((unsigned short)c->our_port);
+      len = 28;
+    }
+
+    rwm_push_data (&ej->out, header, len);
+    vkprintf (1, "PROXY protocol v2: %d bytes (%s)\n", len, (c->flags & C_IPV6) ? "IPv6" : "IPv4");
+  }
+
   assert (CONN_INFO(EJ)->io_conn);
   unlock_job (JOB_REF_PASS (EJ));
 

@@ -602,9 +602,17 @@ connection_job_t alloc_new_connection (int cfd, conn_target_job_t CTJ, listening
     return NULL;
   }  
   
+  union sockaddr_in46 sa_check;
+  unsigned sa_check_len = sizeof (sa_check);
+  memset (&sa_check, 0, sizeof (sa_check));
+  getsockname (cfd, (struct sockaddr *) &sa_check, &sa_check_len);
+  int is_unix = (sa_check.aun.sun_family == AF_UNIX);
+
   flags = 1;
-  setsockopt (cfd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof (flags));
-  if (tcp_maximize_buffers) {
+  if (!is_unix) {
+    setsockopt (cfd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof (flags));
+  }
+  if (tcp_maximize_buffers && !is_unix) {
     maximize_sndbuf (cfd, 0);
     maximize_rcvbuf (cfd, 0);
   }
@@ -658,33 +666,39 @@ connection_job_t alloc_new_connection (int cfd, conn_target_job_t CTJ, listening
     c->flags |= LC->flags & C_EXTERNAL;
   }
 
-  union sockaddr_in46 self;
-  unsigned self_addrlen = sizeof (self);
-  memset (&self, 0, sizeof (self));
-  getsockname (cfd, (struct sockaddr *) &self, &self_addrlen);
+  /* Reuse sa_check from the is_unix detection above (same getsockname result) */
+  union sockaddr_in46 *self = &sa_check;
+  unsigned self_addrlen = sa_check_len;
 
-  if (self.a4.sin_family == AF_INET) {
+  if (self->aun.sun_family == AF_UNIX) {
+    c->our_ip = 0;
+    c->our_port = 0;
+    c->remote_ip = 0;
+    c->remote_port = 0;
+    c->flags |= C_UNIX;
+  } else if (self->a4.sin_family == AF_INET) {
     assert (self_addrlen == sizeof (struct sockaddr_in));
-    c->our_ip = ntohl (self.a4.sin_addr.s_addr);
-    c->our_port = ntohs (self.a4.sin_port);
+    c->our_ip = ntohl (self->a4.sin_addr.s_addr);
+    c->our_port = ntohs (self->a4.sin_port);
     assert (peer);
     c->remote_ip = peer;
+    c->remote_port = peer_port;
   } else {
-    assert (self.a6.sin6_family == AF_INET6);
+    assert (self->a6.sin6_family == AF_INET6);
     assert (!peer);
     if (is_4in6 (peer_ipv6)) {
-      assert (is_4in6 (self.a6.sin6_addr.s6_addr));
-      c->our_ip = ntohl (extract_4in6 (self.a6.sin6_addr.s6_addr));
-      c->our_port = ntohs (self.a6.sin6_port);
+      assert (is_4in6 (self->a6.sin6_addr.s6_addr));
+      c->our_ip = ntohl (extract_4in6 (self->a6.sin6_addr.s6_addr));
+      c->our_port = ntohs (self->a6.sin6_port);
       c->remote_ip = ntohl (extract_4in6 (peer_ipv6));
     } else {
-      memcpy (c->our_ipv6, self.a6.sin6_addr.s6_addr, 16);
-      c->our_port = ntohs (self.a6.sin6_port);
+      memcpy (c->our_ipv6, self->a6.sin6_addr.s6_addr, 16);
+      c->our_port = ntohs (self->a6.sin6_port);
       c->flags |= C_IPV6;
       memcpy (c->remote_ipv6, peer_ipv6, 16);
     }
+    c->remote_port = peer_port;
   }
-  c->remote_port = peer_port;
   
   c->in_queue = alloc_mp_queue_w ();
   c->out_queue = alloc_mp_queue_w ();

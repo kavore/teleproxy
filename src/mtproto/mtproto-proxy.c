@@ -121,6 +121,8 @@ static int window_clamp;
 static int proxy_mode;
 int direct_mode;
 int ipv6_enabled;
+char *unix_target_path;
+int proxy_protocol_enabled;
 
 #define IS_PROXY_IN	0
 #define IS_PROXY_OUT	1
@@ -2655,59 +2657,14 @@ int f_parse_option (int val) {
     }
     break;
   case 2005:
-    {
-      /* Parse dc_id:host:port or dc_id:[ipv6]:port */
-      char buf[256];
-      int len = strlen (optarg);
-      if (len >= (int)sizeof (buf)) {
-        kprintf ("--dc-override argument too long: %s\n", optarg);
-        return 2;
-      }
-      memcpy (buf, optarg, len + 1);
-
-      char *colon1 = strchr (buf, ':');
-      if (!colon1) {
-        kprintf ("--dc-override: expected dc_id:host:port, got %s\n", optarg);
-        return 2;
-      }
-      *colon1 = 0;
-      int dc_id = atoi (buf);
-      if (dc_id <= 0 || dc_id > 5) {
-        kprintf ("--dc-override: dc_id must be 1-5, got %s\n", buf);
-        return 2;
-      }
-
-      char *host_start = colon1 + 1;
-      char *port_str;
-      if (*host_start == '[') {
-        /* IPv6: [addr]:port */
-        char *bracket = strchr (host_start, ']');
-        if (!bracket || bracket[1] != ':') {
-          kprintf ("--dc-override: bad IPv6 format in %s\n", optarg);
-          return 2;
-        }
-        *bracket = 0;
-        host_start++;
-        port_str = bracket + 2;
-      } else {
-        /* IPv4: host:port */
-        char *last_colon = strrchr (host_start, ':');
-        if (!last_colon) {
-          kprintf ("--dc-override: expected host:port after dc_id in %s\n", optarg);
-          return 2;
-        }
-        *last_colon = 0;
-        port_str = last_colon + 1;
-      }
-      int port = atoi (port_str);
-      if (port <= 0 || port > 65535) {
-        kprintf ("--dc-override: bad port %s in %s\n", port_str, optarg);
-        return 2;
-      }
-      if (direct_dc_override (dc_id, host_start, port) < 0) {
-        kprintf ("--dc-override: failed to add %s (bad address or table full)\n", optarg);
-        return 2;
-      }
+    free (unix_target_path);
+    unix_target_path = strdup (optarg);
+    break;
+  case 2006:
+    proxy_protocol_enabled = atoi (optarg);
+    if (proxy_protocol_enabled != 1 && proxy_protocol_enabled != 2) {
+      kprintf ("--proxy-protocol must be 1 or 2\n");
+      usage ();
     }
     break;
   default:
@@ -2732,6 +2689,8 @@ void mtfront_prepare_parse_options (void) {
   parse_option ("ip-allowlist", required_argument, 0, 2002, "path to file with CIDR ranges to exclusively allow");
   parse_option ("direct", no_argument, 0, 2003, "connect directly to Telegram DCs instead of through ME relays (incompatible with -P)");
   parse_option ("replay-cache-size", required_argument, 0, 2004, "TLS anti-replay pool size in entries (default 1048576; ~28 bytes/entry)");
+  parse_option ("unix-target", required_argument, 0, 2005, "route proxy-pass and direct connections to Unix socket path instead of domain IP");
+  parse_option ("proxy-protocol", required_argument, 0, 2006, "send PROXY protocol header to backend: 1 for v1 (text), 2 for v2 (binary); requires --unix-target");
 }
 
 void mtfront_parse_extra_args (int argc, char *argv[]) /* {{{ */ {
@@ -2760,6 +2719,10 @@ void mtfront_pre_init (void) {
     kprintf ("--direct and -P (proxy tag) are mutually exclusive\n");
     exit (2);
   }
+  if (proxy_protocol_enabled && !unix_target_path) {
+    kprintf ("--proxy-protocol requires --unix-target\n");
+    exit (2);
+  }
 
   init_ct_server_mtfront ();
 
@@ -2772,6 +2735,11 @@ void mtfront_pre_init (void) {
     }
 
     vkprintf (1, "config loaded!\n");
+    if (unix_target_path) {
+      vkprintf (0, "proxy-pass fallback: routing to unix socket %s%s\n", unix_target_path,
+                proxy_protocol_enabled == 1 ? " (PROXY protocol v1)" :
+                proxy_protocol_enabled == 2 ? " (PROXY protocol v2)" : "");
+    }
   } else {
     vkprintf (0, "direct mode: connecting directly to Telegram DCs (no ME relay)\n");
   }

@@ -37,6 +37,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -731,6 +732,39 @@ int client_socket_ipv6 (const unsigned char in6_addr_ptr[16], int port, int mode
  
   if (connect (socket_fd, (struct sockaddr *) &addr, sizeof (addr)) == -1 && errno != EINPROGRESS) {
     perror ("connect()");
+    close (socket_fd);
+    return -1;
+  }
+
+  return socket_fd;
+}
+
+int client_socket_unix (const char *path) {
+  if (!path || strlen (path) >= sizeof (((struct sockaddr_un *)0)->sun_path)) {
+    kprintf ("client_socket_unix: path too long or NULL\n");
+    return -1;
+  }
+
+  int socket_fd = socket (AF_UNIX, SOCK_STREAM, 0);
+  if (socket_fd < 0) {
+    perror ("socket(AF_UNIX)");
+    return -1;
+  }
+
+  int flags = fcntl (socket_fd, F_GETFL, 0);
+  if (flags < 0 || fcntl (socket_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+    perror ("fcntl(O_NONBLOCK)");
+    close (socket_fd);
+    return -1;
+  }
+
+  struct sockaddr_un addr;
+  memset (&addr, 0, sizeof (addr));
+  addr.sun_family = AF_UNIX;
+  strncpy (addr.sun_path, path, sizeof (addr.sun_path) - 1);
+
+  if (connect (socket_fd, (struct sockaddr *) &addr, sizeof (addr)) == -1 && errno != EINPROGRESS) {
+    perror ("connect(AF_UNIX)");
     close (socket_fd);
     return -1;
   }

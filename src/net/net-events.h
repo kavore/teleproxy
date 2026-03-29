@@ -25,6 +25,7 @@
 #pragma once
 
 #include <netinet/in.h>
+#include <sys/un.h>
 
 #ifndef EPOLLRDHUP
 #define EPOLLRDHUP 0x2000
@@ -121,6 +122,7 @@ extern struct in_addr settings_addr;
 int server_socket (int port, struct in_addr in_addr, int backlog, int mode);
 int client_socket (in_addr_t in_addr, int port, int mode);
 int client_socket_ipv6 (const unsigned char in6_addr_ptr[16], int port, int mode);
+int client_socket_unix (const char *path);
 
 void maximize_sndbuf (int sfd, int max);
 void maximize_rcvbuf (int sfd, int max);
@@ -131,6 +133,7 @@ int get_my_ipv6 (unsigned char ipv6[16]);
 union sockaddr_in46 {
   struct sockaddr_in a4;
   struct sockaddr_in6 a6;
+  struct sockaddr_un aun;
 };
 
 static inline int is_4in6 (const unsigned char ipv6[16]) { return !*((long long *) ipv6) && ((int *) ipv6)[2] == -0x10000; }
