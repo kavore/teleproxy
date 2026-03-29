@@ -865,10 +865,11 @@ const char *conv_addr (in_addr_t a, char *buf) {
   if (!buf) {
     buf = abuf;
   }
-  sprintf (buf, "%d.%d.%d.%d", a&255, (a>>8)&255, (a>>16)&255, a>>24);
+  snprintf (buf, 64, "%d.%d.%d.%d", a&255, (a>>8)&255, (a>>16)&255, a>>24);
   return buf;
 }
 
+/* Caller must provide at least 64 bytes in buf. Max IPv6 text is ~45 chars. */
 int conv_ipv6_internal (const unsigned short a[8], char *buf) {
   int i, j = 0, k = 0, l = 0;
   for (i = 0; i < 8; i++) {
@@ -918,6 +919,8 @@ const char *conv_addr6 (const unsigned char a[16], char *buf) {
   return buf;
 }
 
+/* NB: show_ip and show_ipv6 use static rotating buffers -- not thread-safe.
+   Callers must not use results across threads or hold pointers long-term. */
 const char *show_ip (unsigned ip) {
   static char abuf[256], *ptr = abuf;
   char *res;

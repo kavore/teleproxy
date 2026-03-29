@@ -171,10 +171,10 @@ int write_http_error_raw (connection_job_t C, struct raw_message *raw, int code)
     write_basic_http_header_raw (C, raw, code, 0, -1, 0, 0);
     return 0;
   } else {
-    static char buff[1024];
+    char buff[1024];
     char *ptr = buff;
     const char *error_message = http_get_error_msg_text (&code);
-    ptr += sprintf (ptr, error_text_pattern, code, error_message, code, error_message);
+    ptr += snprintf (ptr, sizeof(buff) - (ptr - buff), error_text_pattern, code, error_message, code, error_message);
     write_basic_http_header_raw (C, raw, code, 0, ptr - buff, 0, 0);
     assert (rwm_push_data (raw, buff, ptr - buff) == ptr - buff);
     return ptr - buff;
@@ -340,7 +340,7 @@ static char months [] = "JanFebMarAprMayJunJulAugSepOctNovDecGlk";
 static char dows [] = "SunMonTueWedThuFriSatEar";
 
 
-int dd [] =
+static const int dd_base[] =
 {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
 
 void gen_http_date (char date_buffer[HTTP_DATE_LEN + 1], int time) {
@@ -368,9 +368,9 @@ void gen_http_date (char date_buffer[HTTP_DATE_LEN + 1], int time) {
       }
     }
   }
-  if (year & 3) {
-    dd[1] = 28;
-  } else {
+  int dd[12];
+  memcpy (dd, dd_base, sizeof (dd));
+  if (!(year & 3)) {
     dd[1] = 29;
   }
 
@@ -429,9 +429,8 @@ int gen_http_time (char *date_buffer, int *time) {
   if (!(year & 3) && mon >= 2) {
     d++;
   }
-  dd[1] = 28;
-  for (i = 0; i < mon; i++) { 
-    d += dd[i];
+  for (i = 0; i < mon; i++) {
+    d += dd_base[i];
   }
   *time = (((d * 24 + hour) * 60 + min) * 60) + sec;
   return 0;
@@ -502,7 +501,7 @@ int write_basic_http_header_raw (connection_job_t C, struct raw_message *raw, in
 
   if (D->http_ver >= HTTP_V10 || D->http_ver == 0) {
 #define B_SZ        4096
-    static char buff[B_SZ], date_buff[32];
+    char buff[B_SZ], date_buff[32];
     char *ptr = buff;
     const char *error_message = http_get_error_msg_text (&code);
     if (date) {
@@ -517,10 +516,10 @@ int write_basic_http_header_raw (connection_job_t C, struct raw_message *raw, in
     D->query_flags &= ~QF_EXTRA_HEADERS;
     assert (ptr < buff + B_SZ - 64);
     if (len >= 0) {
-      ptr += sprintf (ptr, "Content-Length: %d\r\n", len);
+      ptr += snprintf (ptr, buff + B_SZ - ptr, "Content-Length: %d\r\n", len);
     }
 
-    ptr += sprintf (ptr, "\r\n");
+    ptr += snprintf (ptr, buff + B_SZ - ptr, "\r\n");
 
     assert (rwm_push_data (raw, buff, ptr - buff) == ptr - buff);
     return ptr - buff;

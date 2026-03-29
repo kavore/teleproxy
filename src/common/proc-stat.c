@@ -30,9 +30,9 @@ int read_proc_stats (int pid, int tid, struct proc_stats *s) {
 
   char buf[256]; 
   if (tid <= 0) {
-    sprintf (buf, "/proc/%d/stat", pid); 
+    snprintf (buf, sizeof(buf), "/proc/%d/stat", pid);
   } else {
-    sprintf (buf, "/proc/%d/task/%d/stat", pid, tid); 
+    snprintf (buf, sizeof(buf), "/proc/%d/task/%d/stat", pid, tid); 
   }
 
   FILE *proc = fopen (buf, "r"); 

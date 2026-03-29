@@ -386,9 +386,9 @@ void parse_option_down (struct engine_parse_option *P) {
   Q --;
   if (Q != P) {
     struct engine_parse_option T;
-    T = *Q;
-    memmove (P + 1, P, (P - Q) * sizeof (struct engine_parse_option));
-    *P = T;
+    T = *P;
+    memmove (P, P + 1, (Q - P) * sizeof (struct engine_parse_option));
+    *Q = T;
   }
 }
 
