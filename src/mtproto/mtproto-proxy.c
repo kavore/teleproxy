@@ -39,6 +39,7 @@
 #include <sys/mman.h>
 #include <netdb.h>
 #include <ctype.h>
+#include <limits.h>
 #include <openssl/rand.h>
 #include <openssl/rsa.h>
 #include <openssl/pem.h>
@@ -277,7 +278,7 @@ struct ext_connection *get_ext_connection_by_in_conn_id (int in_fd, int in_gen, 
   }
   assert (ext_connections < EXT_CONN_TABLE_SIZE / 2);
   cur = calloc (sizeof (struct ext_connection), 1);
-  assert (cur);
+  if (!cur) { return (void *) -1L; }
   cur->h_next = InExtConnectionHash[h];
   InExtConnectionHash[h] = cur;
   cur->in_fd = in_fd;
@@ -295,9 +296,17 @@ struct ext_connection *get_ext_connection_by_in_conn_id (int in_fd, int in_gen, 
     H->i_prev->i_next = cur;
     H->i_prev = cur;
   }
-  h = in_conn_id ? lrand48() : in_fd;
+  if (in_conn_id) {
+    unsigned int rnd;
+    RAND_bytes ((unsigned char *)&rnd, sizeof (rnd));
+    h = rnd;
+  } else {
+    h = in_fd;
+  }
   while (OutExtConnections[h &= (EXT_CONN_TABLE_SIZE - 1)].ref) {
-    h = lrand48();
+    unsigned int rnd;
+    RAND_bytes ((unsigned char *)&rnd, sizeof (rnd));
+    h = rnd;
   }
   OutExtConnections[h].ref = cur;
   cur->out_conn_id = OutExtConnections[h].out_conn_id = (OutExtConnections[h].out_conn_id | (EXT_CONN_TABLE_SIZE - 1)) + 1 + h;
@@ -1616,9 +1625,11 @@ int process_http_query (struct tl_in_state *tlio_in, job_t HQJ) {
     }
     if (D->query_type == htqt_options) {
       char response_buffer[512];
-      int len = snprintf (response_buffer, 511, "HTTP/1.1 200 OK\r\nConnection: %s\r\nContent-type: text/plain\r\nPragma: no-cache\r\nCache-control: no-store\r\n%sContent-length: 0\r\n\r\n", (HTS_DATA(c)->query_flags & QF_KEEPALIVE) ? "keep-alive" : "close", HTS_DATA(c)->query_flags & QF_EXTRA_HEADERS ? mtproto_cors_http_headers : "");
-      assert (len < 511);
+      int len = snprintf (response_buffer, sizeof (response_buffer) - 1, "HTTP/1.1 200 OK\r\nConnection: %s\r\nContent-type: text/plain\r\nPragma: no-cache\r\nCache-control: no-store\r\n%sContent-length: 0\r\n\r\n", (HTS_DATA(c)->query_flags & QF_KEEPALIVE) ? "keep-alive" : "close", HTS_DATA(c)->query_flags & QF_EXTRA_HEADERS ? mtproto_cors_http_headers : "");
+      if (len >= (int)sizeof (response_buffer) - 1) { len = sizeof (response_buffer) - 2; }
+      response_buffer[len] = '\0';
       struct raw_message *m = calloc (sizeof (struct raw_message), 1);
+      if (!m) { return -500; }
       rwm_create (m, response_buffer, len);
       http_flush (c, m);
       return 0;
@@ -1631,7 +1642,7 @@ int process_http_query (struct tl_in_state *tlio_in, job_t HQJ) {
     cur_http_user_agent_len = get_http_header (qHeaders, qHeadersLen, cur_http_user_agent, sizeof (cur_http_user_agent) - 1, "User-Agent", 10);
 
     int tmp_ip_port[5], *remote_ip_port = 0;
-    if ((CONN_INFO(c)->remote_ip & 0xff000000) == 0x0a000000 || (CONN_INFO(c)->remote_ip & 0xff000000) == 0x7f000000) {
+    if (is_private_ip(CONN_INFO(c)->remote_ip)) {
       char x_real_ip[64], x_real_port[16];
       int x_real_ip_len = get_http_header (qHeaders, qHeadersLen, x_real_ip, sizeof (x_real_ip) - 1, "X-Real-IP", 9);
       int x_real_port_len = get_http_header (qHeaders, qHeadersLen, x_real_port, sizeof (x_real_port) - 1, "X-Real-Port", 11);
@@ -1761,6 +1772,7 @@ int hts_stats_execute (connection_job_t c, struct raw_message *msg, int op) {
   }
 
   struct raw_message *raw = calloc (sizeof (*raw), 1);
+  if (!raw) { sb_release (&sb); return -1; }
   rwm_init (raw, 0);
   write_basic_http_header_raw (c, raw, 200, 0, sb.pos, 0, content_type);
   assert (rwm_push_data (raw, sb.buff, sb.pos) == sb.pos);
@@ -1950,7 +1962,9 @@ int http_send_message (JOB_REF_ARG (C), struct tl_in_state *tlio_in, int flags) 
     char response_buffer[512];
     TLS_START_UNALIGN (JOB_REF_CREATE_PASS (C)) {
       int len = TL_IN_REMAINING;
-      tl_store_raw_data (response_buffer, snprintf (response_buffer, sizeof (response_buffer) - 1, "HTTP/1.1 200 OK\r\nConnection: %s\r\nContent-type: application/octet-stream\r\nPragma: no-cache\r\nCache-control: no-store\r\n%sContent-length: %d\r\n\r\n", (D->query_flags & QF_KEEPALIVE) ? "keep-alive" : "close", D->query_flags & QF_EXTRA_HEADERS ? mtproto_cors_http_headers : "", len));
+      int hdr_len = snprintf (response_buffer, sizeof (response_buffer) - 1, "HTTP/1.1 200 OK\r\nConnection: %s\r\nContent-type: application/octet-stream\r\nPragma: no-cache\r\nCache-control: no-store\r\n%sContent-length: %d\r\n\r\n", (D->query_flags & QF_KEEPALIVE) ? "keep-alive" : "close", D->query_flags & QF_EXTRA_HEADERS ? mtproto_cors_http_headers : "", len);
+      if (hdr_len >= (int)sizeof (response_buffer) - 1) { hdr_len = sizeof (response_buffer) - 2; }
+      tl_store_raw_data (response_buffer, hdr_len);
       assert (tl_copy_through (tlio_in, tlio_out, len, 1) == len);
     } TLS_END;
   }
@@ -2277,9 +2291,9 @@ void check_all_conn_buffers (void) {
 }
 
 int check_conn_buffers (connection_job_t c) {
-  int tot_used_bytes = CONN_INFO(c)->in.total_bytes + CONN_INFO(c)->in_u.total_bytes + CONN_INFO(c)->out.total_bytes + CONN_INFO(c)->out_p.total_bytes;
+  long long tot_used_bytes = (long long)CONN_INFO(c)->in.total_bytes + CONN_INFO(c)->in_u.total_bytes + CONN_INFO(c)->out.total_bytes + CONN_INFO(c)->out_p.total_bytes;
   if (tot_used_bytes > MAX_CONNECTION_BUFFER_SPACE) {
-    vkprintf (2, "check_conn_buffers(): closing connection %d because of %d buffer bytes used (%d max)\n", CONN_INFO(c)->fd, tot_used_bytes, MAX_CONNECTION_BUFFER_SPACE);
+    vkprintf (2, "check_conn_buffers(): closing connection %d because of %lld buffer bytes used (%d max)\n", CONN_INFO(c)->fd, tot_used_bytes, MAX_CONNECTION_BUFFER_SPACE);
     fail_connection (c, -429);
     ++connections_failed_flood;
     return -1;
@@ -2495,13 +2509,26 @@ int f_parse_option (int val) {
   char *colon, *ptr;
   switch (val) {
   case 'C':
-    max_special_connections = atoi (optarg);
-    if (max_special_connections < 0) {
-      max_special_connections = 0;
+    {
+      char *endp;
+      long v = strtol (optarg, &endp, 10);
+      if (*endp || v < 0 || v > 1000000) {
+        kprintf ("Invalid max-special-connections '%s'\n", optarg);
+        usage ();
+      }
+      max_special_connections = (int)v;
     }
     break;
   case 'W':
-    window_clamp = atoi (optarg);
+    {
+      char *endp;
+      long v = strtol (optarg, &endp, 10);
+      if (*endp || v < 0 || v > (1L << 30)) {
+        kprintf ("Invalid window-clamp '%s'\n", optarg);
+        usage ();
+      }
+      window_clamp = (int)v;
+    }
     break;
   case 'H':
     ptr = optarg;
@@ -2526,15 +2553,27 @@ int f_parse_option (int val) {
     break;
     /*
   case 'o':
-    outbound_connections_per_second = atoi (optarg);
-    if (outbound_connections_per_second <= 0) {
-      outbound_connections_per_second = 1;
+    {
+      char *endp;
+      long v = strtol (optarg, &endp, 10);
+      if (*endp || v < 1 || v > 1000000) {
+        kprintf ("Invalid outbound-connections-per-second '%s'\n", optarg);
+        usage ();
+      }
+      outbound_connections_per_second = (int)v;
     }
     break;
     */
   case 'M':
-    workers = atoi (optarg);
-    assert (workers >= 0 && workers <= MAX_WORKERS);
+    {
+      char *endp;
+      long v = strtol (optarg, &endp, 10);
+      if (*endp || v < 0 || v > 128) {
+        kprintf ("Invalid workers count '%s'\n", optarg);
+        usage ();
+      }
+      workers = (int)v;
+    }
     break;
   case 'T':
     ping_interval = atof (optarg);
@@ -2571,7 +2610,7 @@ int f_parse_option (int val) {
             if (*limit_str) {
               char *endp;
               long lv = strtol (limit_str, &endp, 10);
-              if (*endp || lv < 1) {
+              if (*endp || lv < 1 || lv > INT_MAX) {
                 kprintf ("Invalid connection limit '%s' (must be a positive integer)\n", limit_str);
                 usage ();
               }
