@@ -676,24 +676,60 @@ int default_main (server_functions_t *F, int argc, char *argv[]) {
 static int f_parse_option_engine (int val) {
   switch (val) {
     case 227:
-      engine_set_required_cpu_threads (atoi (optarg));
+      {
+        char *endp;
+        long v = strtol (optarg, &endp, 10);
+        if (*endp || v <= 0) {
+          kprintf ("Invalid cpu-threads value '%s'\n", optarg);
+          usage ();
+        }
+        engine_set_required_cpu_threads ((int)v);
+      }
       break;
     case 228:
-      engine_set_required_io_threads (atoi (optarg));
+      {
+        char *endp;
+        long v = strtol (optarg, &endp, 10);
+        if (*endp || v <= 0) {
+          kprintf ("Invalid io-threads value '%s'\n", optarg);
+          usage ();
+        }
+        engine_set_required_io_threads ((int)v);
+      }
       break;
     case 258:
-      if (optarg && atoi (optarg) == 0) {
-        engine_disable_multithread ();
-      } else {
-        engine_enable_multithread ();
-        epoll_sleep_ns = 10000;
+      {
+        char *endp;
+        long v = strtol (optarg, &endp, 10);
+        if (optarg && *endp == '\0' && v == 0) {
+          engine_disable_multithread ();
+        } else {
+          engine_enable_multithread ();
+          epoll_sleep_ns = 10000;
+        }
       }
       break;
     case 301:
-      engine_set_required_tcp_cpu_threads (atoi (optarg));
+      {
+        char *endp;
+        long v = strtol (optarg, &endp, 10);
+        if (*endp || v <= 0) {
+          kprintf ("Invalid tcp-cpu-threads value '%s'\n", optarg);
+          usage ();
+        }
+        engine_set_required_tcp_cpu_threads ((int)v);
+      }
       break;
     case 302:
-      engine_set_required_tcp_io_threads (atoi (optarg));
+      {
+        char *endp;
+        long v = strtol (optarg, &endp, 10);
+        if (*endp || v <= 0) {
+          kprintf ("Invalid tcp-io-threads value '%s'\n", optarg);
+          usage ();
+        }
+        engine_set_required_tcp_io_threads ((int)v);
+      }
       break;
     default:
       return -1;

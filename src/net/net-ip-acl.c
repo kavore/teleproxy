@@ -288,6 +288,14 @@ static struct ip_acl *ip_acl_load (const char *filename) {
 
   while (fgets (line, sizeof (line), f)) {
     lineno++;
+    /* detect truncated lines */
+    size_t ll = strlen (line);
+    if (ll > 0 && line[ll - 1] != '\n' && !feof (f)) {
+      kprintf ("ip_acl: %s:%d: line too long, skipping\n", filename, lineno);
+      int ch;
+      while ((ch = fgetc (f)) != EOF && ch != '\n') {}
+      continue;
+    }
     char *s = trim (line);
 
     /* skip empty lines and comments */
@@ -319,30 +327,37 @@ int ip_acl_reload (void) {
     return 0;
   }
 
+  struct ip_acl *new_bl = NULL, *new_al = NULL;
+
   if (blocklist_file) {
-    struct ip_acl *new_bl = ip_acl_load (blocklist_file);
-    if (new_bl) {
-      ip_acl_free (current_blocklist);
-      current_blocklist = new_bl;
-    } else if (!current_blocklist) {
-      /* initial load failure is fatal */
+    new_bl = ip_acl_load (blocklist_file);
+    if (!new_bl && !current_blocklist) {
       return -1;
-    } else {
+    }
+    if (!new_bl) {
       kprintf ("ip_acl: keeping existing blocklist (%d rules)\n", current_blocklist->count);
     }
   }
 
   if (allowlist_file) {
-    struct ip_acl *new_al = ip_acl_load (allowlist_file);
-    if (new_al) {
-      ip_acl_free (current_allowlist);
-      current_allowlist = new_al;
-    } else if (!current_allowlist) {
+    new_al = ip_acl_load (allowlist_file);
+    if (!new_al && !current_allowlist) {
+      ip_acl_free (new_bl);
       return -1;
-    } else {
+    }
+    if (!new_al) {
       kprintf ("ip_acl: keeping existing allowlist (%d rules)\n", current_allowlist->count);
     }
   }
+
+  /* swap atomically */
+  struct ip_acl *old_bl = current_blocklist;
+  struct ip_acl *old_al = current_allowlist;
+  if (new_bl) { __sync_synchronize (); current_blocklist = new_bl; }
+  if (new_al) { __sync_synchronize (); current_allowlist = new_al; }
+  __sync_synchronize ();
+  if (new_bl) { ip_acl_free (old_bl); }
+  if (new_al) { ip_acl_free (old_al); }
 
   return 0;
 }

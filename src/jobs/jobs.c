@@ -1011,7 +1011,7 @@ static void process_one_sublist (unsigned long id, int class) {
   } else {
     int i;
     for (i = 0; i < MAX_SUBCLASS_THREADS; i++) {
-      while (sem_post (&J_SCL->sem));
+      while (sem_post (&J_SCL->sem) < 0);
     }
   }
 }

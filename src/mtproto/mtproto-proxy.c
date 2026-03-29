@@ -1497,6 +1497,8 @@ unsigned parse_text_ipv4 (char *str) {
   return (a << 24) | (b << 16) | (c << 8) | d;
 }
 
+static inline int is_private_ip (unsigned ip);
+
 int parse_text_ipv6 (unsigned char ip[16], const char *str) {
   const char *ptr = str;
   int i, k = -1;

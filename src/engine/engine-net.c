@@ -27,6 +27,7 @@
 */
 #include <arpa/inet.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -144,10 +145,26 @@ void set_maxconn (int val) {
 static int f_parse_option_net (int val) {
   switch (val) {
     case 'b':
-      engine_set_backlog (atoi (optarg));
+      {
+        char *endp;
+        long v = strtol (optarg, &endp, 10);
+        if (*endp || v <= 0) {
+          kprintf ("Invalid backlog value '%s'\n", optarg);
+          usage ();
+        }
+        engine_set_backlog ((int)v);
+      }
       break;
     case 'c':
-      set_maxconn (atoi (optarg));
+      {
+        char *endp;
+        long v = strtol (optarg, &endp, 10);
+        if (*endp || v <= 0) {
+          kprintf ("Invalid maxconn value '%s'\n", optarg);
+          usage ();
+        }
+        set_maxconn ((int)v);
+      }
       break;
     case 'p':
       {
@@ -189,10 +206,26 @@ static int f_parse_option_net (int val) {
       tcp_force_enable_dh ();
       break;
     case 249:
-      tcp_set_max_accept_rate (atoi (optarg));
+      {
+        char *endp;
+        long v = strtol (optarg, &endp, 10);
+        if (*endp || v <= 0) {
+          kprintf ("Invalid max-accept-rate value '%s'\n", optarg);
+          usage ();
+        }
+        tcp_set_max_accept_rate ((int)v);
+      }
       break;
     case 250:
-      tcp_set_max_dh_accept_rate (atoi (optarg));
+      {
+        char *endp;
+        long v = strtol (optarg, &endp, 10);
+        if (*endp || v <= 0) {
+          kprintf ("Invalid max-dh-accept-rate value '%s'\n", optarg);
+          usage ();
+        }
+        tcp_set_max_dh_accept_rate ((int)v);
+      }
       break;
     case 372:
       if (net_add_nat_info (optarg) < 0) {

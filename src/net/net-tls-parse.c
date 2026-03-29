@@ -69,7 +69,7 @@ int tls_check_server_hello (const unsigned char *response, int len,
 
   if (memcmp (response + 11, "\xcf\x21\xad\x74\xe5\x9a\x61\x11\xbe\x1d\x8c\x02\x1e\x65\xb8\x91"
                              "\xc2\xa2\x11\x16\x7a\xbb\x8c\x5e\x07\x9e\x09\xe2\xc8\xa8\x33\x9c", 32) == 0) {
-    FAIL("TLS 1.3 servers returning HelloRetryRequest are not supprted");
+    FAIL("TLS 1.3 servers returning HelloRetryRequest are not supported");
   }
   if (response[43] == '\x00') {
     FAIL("TLS <= 1.2: empty session_id");
@@ -127,8 +127,8 @@ int tls_check_server_hello (const unsigned char *response, int len,
     }
     if (*encrypted_record_count < MAX_ENCRYPTED_RECORDS) {
       encrypted_record_sizes[*encrypted_record_count] = rec_len;
+      (*encrypted_record_count)++;
     }
-    (*encrypted_record_count)++;
     pos += rec_len;
   }
   if (*encrypted_record_count == 0) {

@@ -228,4 +228,4 @@ if [ "$DIRECT_MODE" != "true" ]; then
     crond
 fi
 
-exec $CMD
+eval "exec $CMD"
