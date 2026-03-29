@@ -5,14 +5,18 @@ set -e
 ORIG_ARGS="$*"
 
 # Backward-compat: accept old MTPROXY_* env vars with deprecation warning
+# Uses indirection via a temp file to avoid eval on user-controlled values
 for _old_var in SECRET SECRET_1 SECRET_2 SECRET_3 SECRET_4 SECRET_5 SECRET_6 \
   SECRET_7 SECRET_8 SECRET_9 SECRET_10 SECRET_11 SECRET_12 SECRET_13 SECRET_14 \
   SECRET_15 SECRET_16; do
-    eval "_new_val=\${TELEPROXY_${_old_var}:-}"
-    eval "_old_val=\${MTPROXY_${_old_var}:-}"
+    _new_val=""
+    _old_val=""
+    # Safe indirection using printenv (no eval on user values)
+    _new_val=$(printenv "TELEPROXY_${_old_var}" 2>/dev/null || true)
+    _old_val=$(printenv "MTPROXY_${_old_var}" 2>/dev/null || true)
     if [ -z "$_new_val" ] && [ -n "$_old_val" ]; then
         echo "WARNING: MTPROXY_${_old_var} is deprecated, use TELEPROXY_${_old_var} instead" >&2
-        eval "export TELEPROXY_${_old_var}=\"\$_old_val\""
+        export "TELEPROXY_${_old_var}=${_old_val}"
     fi
 done
 
@@ -56,6 +60,50 @@ if [ "$DIRECT_MODE" != "true" ]; then
     fi
 fi
 
+# --- Input validation helpers ---
+validate_port () {
+    case "$1" in
+        ''|*[!0-9]*) echo "ERROR: Invalid port number: $1" >&2; exit 1 ;;
+    esac
+    if [ "$1" -lt 1 ] || [ "$1" -gt 65535 ]; then
+        echo "ERROR: Port out of range (1-65535): $1" >&2; exit 1
+    fi
+}
+
+validate_positive_int () {
+    case "$1" in
+        ''|*[!0-9]*) echo "ERROR: Invalid number for $2: $1" >&2; exit 1 ;;
+    esac
+}
+
+# Validate a hex secret (32 hex chars, optionally with :label:limit suffix)
+validate_secret () {
+    _hex=$(printf '%s' "$1" | cut -d: -f1)
+    case "$_hex" in
+        *[!0-9a-fA-F]*) echo "ERROR: Secret contains non-hex characters: $_hex" >&2; exit 1 ;;
+    esac
+    if [ "${#_hex}" -ne 32 ]; then
+        echo "ERROR: Secret must be exactly 32 hex characters, got ${#_hex}" >&2; exit 1
+    fi
+}
+
+# Validate domain name (alphanumeric, dots, hyphens, optional :port)
+validate_domain () {
+    _d=$(printf '%s' "$1" | cut -d: -f1)
+    case "$_d" in
+        *[!a-zA-Z0-9.-]*) echo "ERROR: Invalid domain: $1" >&2; exit 1 ;;
+    esac
+}
+
+# Validate file path (no shell metacharacters)
+validate_filepath () {
+    case "$1" in
+        *['$`\;|&()']*) echo "ERROR: Invalid file path: $1" >&2; exit 1 ;;
+    esac
+}
+
+# --- End validation helpers ---
+
 # Collect secrets from comma-separated SECRET and/or numbered SECRET_N vars.
 # Uses positional parameters as a portable array (POSIX sh).
 set --
@@ -73,12 +121,12 @@ fi
 
 _i=1
 while [ "$_i" -le 16 ]; do
-    eval "_val=\${SECRET_${_i}:-}"
+    _val=$(printenv "SECRET_${_i}" 2>/dev/null || true)
     _val=$(printf '%s' "$_val" | tr -d '[:space:]')
     if [ -n "$_val" ]; then
-        eval "_lbl=\${SECRET_LABEL_${_i}:-}"
+        _lbl=$(printenv "SECRET_LABEL_${_i}" 2>/dev/null || true)
         _lbl=$(printf '%s' "$_lbl" | tr -d '[:space:]')
-        eval "_lim=\${SECRET_LIMIT_${_i}:-}"
+        _lim=$(printenv "SECRET_LIMIT_${_i}" 2>/dev/null || true)
         _lim=$(printf '%s' "$_lim" | tr -d '[:space:]')
         _suffix=""
         if [ -n "$_lbl" ] || [ -n "$_lim" ]; then
@@ -106,7 +154,7 @@ fi
 
 echo "Configured $# secret(s)"
 
-# Set default values
+# Set default values and validate
 PORT=${PORT:-443}
 STATS_PORT=${STATS_PORT:-8888}
 WORKERS=${WORKERS:-1}
@@ -116,6 +164,20 @@ RANDOM_PADDING=${RANDOM_PADDING:-}
 EE_DOMAIN=${EE_DOMAIN:-}
 # Max connections - lower value avoids rlimit issues in containers
 MAX_CONNECTIONS=${MAX_CONNECTIONS:-60000}
+
+validate_port "$PORT"
+validate_port "$STATS_PORT"
+validate_positive_int "$WORKERS" "WORKERS"
+validate_positive_int "$MAX_CONNECTIONS" "MAX_CONNECTIONS"
+if [ -n "$EE_DOMAIN" ]; then validate_domain "$EE_DOMAIN"; fi
+if [ -n "$IP_BLOCKLIST" ]; then validate_filepath "$IP_BLOCKLIST"; fi
+if [ -n "$IP_ALLOWLIST" ]; then validate_filepath "$IP_ALLOWLIST"; fi
+if [ -n "$REPLAY_CACHE_SIZE" ]; then validate_positive_int "$REPLAY_CACHE_SIZE" "REPLAY_CACHE_SIZE"; fi
+
+# Validate all secrets
+for _s in "$@"; do
+    validate_secret "$_s"
+done
 
 # Detect container-local IPv4 for NAT.
 LOCAL_IP=$(ip -4 route get 8.8.8.8 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')
@@ -135,66 +197,10 @@ fi
 
 NAT_INFO_ARGS=""
 if [ -n "$EXTERNAL_IP" ] && [ -n "$LOCAL_IP" ]; then
-    NAT_INFO_ARGS="--nat-info $LOCAL_IP:$EXTERNAL_IP"
+    NAT_INFO_ARGS="--nat-info ${LOCAL_IP}:${EXTERNAL_IP}"
 elif [ -z "$EXTERNAL_IP" ]; then
     echo "WARNING: Could not detect external IP. Set EXTERNAL_IP env var for Docker NAT support." >&2
 fi
-
-# Build command
-SECRET_ARGS=""
-for _s in "$@"; do
-    SECRET_ARGS="$SECRET_ARGS -S $_s"
-done
-
-CMD="./teleproxy -p $STATS_PORT -H $PORT$SECRET_ARGS -c $MAX_CONNECTIONS --http-stats --allow-skip-dh $NAT_INFO_ARGS"
-
-if [ "$PREFER_IPV6" = "true" ]; then
-    CMD="$CMD -6"
-fi
-
-if [ -n "$PROXY_TAG" ]; then
-    CMD="$CMD -P $PROXY_TAG"
-fi
-
-if [ "$RANDOM_PADDING" = "true" ]; then
-    CMD="$CMD -R"
-fi
-
-if [ -n "$EE_DOMAIN" ]; then
-    CMD="$CMD -D $EE_DOMAIN"
-fi
-
-if [ -n "$IP_BLOCKLIST" ]; then
-    CMD="$CMD --ip-blocklist $IP_BLOCKLIST"
-fi
-
-if [ -n "$IP_ALLOWLIST" ]; then
-    CMD="$CMD --ip-allowlist $IP_ALLOWLIST"
-fi
-
-if [ -n "$REPLAY_CACHE_SIZE" ]; then
-    CMD="$CMD --replay-cache-size $REPLAY_CACHE_SIZE"
-fi
-
-if [ -n "$DC_OVERRIDE" ]; then
-    _save_ifs="$IFS"
-    IFS=','
-    for _dc_entry in $DC_OVERRIDE; do
-        IFS="$_save_ifs"
-        _dc_entry=$(printf '%s' "$_dc_entry" | tr -d '[:space:]')
-        [ -n "$_dc_entry" ] && CMD="$CMD --dc-override $_dc_entry"
-    done
-    IFS="$_save_ifs"
-fi
-
-if [ "$DIRECT_MODE" = "true" ]; then
-    CMD="$CMD --direct -M $WORKERS -u teleproxy $ORIG_ARGS"
-    echo "Direct mode: connecting directly to Telegram DCs (no ME relay)"
-else
-    CMD="$CMD --aes-pwd proxy-secret data/proxy-multi.conf -M $WORKERS -u teleproxy $ORIG_ARGS"
-fi
-
-echo "Starting Teleproxy with command: $CMD"
 
 # Print ready-to-share connection links
 echo ""
@@ -228,4 +234,25 @@ if [ "$DIRECT_MODE" != "true" ]; then
     crond
 fi
 
-eval "exec $CMD"
+# Execute teleproxy with proper argument quoting (no eval)
+# shellcheck disable=SC2086
+exec ./teleproxy \
+    -p "$STATS_PORT" \
+    -H "$PORT" \
+    $(for _s in "$@"; do printf -- '-S %s ' "$_s"; done) \
+    -c "$MAX_CONNECTIONS" \
+    --http-stats \
+    $NAT_INFO_ARGS \
+    ${PREFER_IPV6:+$([ "$PREFER_IPV6" = "true" ] && printf -- '-6')} \
+    ${PROXY_TAG:+-P "$PROXY_TAG"} \
+    ${RANDOM_PADDING:+$([ "$RANDOM_PADDING" = "true" ] && printf -- '-R')} \
+    ${EE_DOMAIN:+-D "$EE_DOMAIN"} \
+    ${IP_BLOCKLIST:+--ip-blocklist "$IP_BLOCKLIST"} \
+    ${IP_ALLOWLIST:+--ip-allowlist "$IP_ALLOWLIST"} \
+    ${REPLAY_CACHE_SIZE:+--replay-cache-size "$REPLAY_CACHE_SIZE"} \
+    $(if [ "$DIRECT_MODE" = "true" ]; then
+        printf -- '--direct -M %s -u teleproxy' "$WORKERS"
+    else
+        printf -- '--aes-pwd proxy-secret data/proxy-multi.conf -M %s -u teleproxy' "$WORKERS"
+    fi) \
+    $ORIG_ARGS
