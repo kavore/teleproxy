@@ -27,6 +27,7 @@
 #include <sys/uio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
 #include <unistd.h>
 
@@ -71,6 +72,7 @@ int cpu_tcp_server_writer (connection_job_t C) /* {{{ */ {
   c->type->flush (C);
 
   struct raw_message *raw = malloc (sizeof (*raw));
+  if (!raw) { return -1; }
 
   if (c->type->crypto_encrypt_output && c->crypto) {
     c->type->crypto_encrypt_output (C);
@@ -174,10 +176,13 @@ int cpu_tcp_server_reader (connection_job_t C) /* {{{ */ {
     } else if (res != NEED_MORE_BYTES) {
       bytes = (c->crypto ? c->in.total_bytes : c->in_u.total_bytes);
       // have to load or skip abs(res) bytes before invoking parse_execute
+      // Guard against signed integer overflow
       if (res < 0) {
-        res -= bytes;
+        if (res < INT_MIN + bytes) { res = INT_MIN; }
+        else { res -= bytes; }
       } else {
-        res += bytes;
+        if (res > INT_MAX - bytes) { res = INT_MAX; }
+        else { res += bytes; }
       }
       c->skip_bytes = res;
       break;
@@ -284,6 +289,11 @@ int cpu_tcp_aes_crypto_ctr128_decrypt_input (connection_job_t C) /* {{{ */ {
           return 0;
         }
         c->left_tls_packet_length = 256 * header[3] + header[4];
+        if (c->left_tls_packet_length > 16384 + 256) { /* RFC 8446 max record + overhead */
+          vkprintf (1, "TLS record too large: %d bytes\n", c->left_tls_packet_length);
+          fail_connection (C, -1);
+          return 0;
+        }
         vkprintf (2, "Receive TLS-packet of length %d\n", c->left_tls_packet_length);
         assert (rwm_skip_data (&c->in_u, 5) == 5);
         len -= 5;

@@ -191,10 +191,14 @@ static int tcp_rpcc_process_nonce_packet (connection_job_t C, struct raw_message
     if (!(D->crypto_flags & RPCF_REQ_DH) || !c->crypto_temp) {
       return -7;
     }
+    P.s.key_select = select_best_key_signature (P.s.key_select, P.x.extra_keys_count, P.x.extra_key_select);
+    goto rpc_crypto_aes_common;
   }
   case RPC_CRYPTO_AES_EXT:
     P.s.key_select = select_best_key_signature (P.s.key_select, P.x.extra_keys_count, P.x.extra_key_select);
+    goto rpc_crypto_aes_common;
   case RPC_CRYPTO_AES:
+  rpc_crypto_aes_common:
     if (!P.s.key_select || !select_best_key_signature (P.s.key_select, 0, 0)) {
       return -3;
     }

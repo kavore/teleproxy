@@ -1391,6 +1391,7 @@ static size_t replay_cache_bytes (int pool_size) {
 }
 
 static inline void replay_lock (void) {
+  int spins = 0;
   while (__sync_lock_test_and_set (&replay_cache->lock, 1)) {
     while (replay_cache->lock) {
       #if defined(__x86_64__) || defined(__i386__)
@@ -1398,6 +1399,11 @@ static inline void replay_lock (void) {
       #elif defined(__aarch64__)
       __asm__ __volatile__ ("yield" ::: "memory");
       #endif
+      if (++spins > 1000000) {
+        /* Assume holder crashed; force-break the lock to prevent deadlock */
+        __sync_lock_release (&replay_cache->lock);
+        spins = 0;
+      }
     }
   }
 }
