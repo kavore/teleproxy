@@ -31,6 +31,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -1302,20 +1303,96 @@ void tcp_rpc_init_proxy_domains() {
   }
 }
 
-struct client_random {
-  unsigned char random[16];
-  struct client_random *next_by_time;
-  struct client_random *next_by_hash;
-  int time;
-};
+// --- Replay cache: shared across workers via mmap, per-process fallback otherwise ---
+//
+// At 2-day TTL (MAX_CLIENT_RANDOM_CACHE_TIME), pool capacity determines the
+// max sustained TLS handshake rate:  rate = pool_size / 172800.
+// Default 1M slots ≈ 5.8 handshakes/s; 4M ≈ 23/s.  Use --replay-cache-size
+// to raise for high-traffic deployments.
 
 #define RANDOM_HASH_BITS 14
-static struct client_random *client_randoms[1 << RANDOM_HASH_BITS];
+#define RANDOM_HASH_SIZE (1 << RANDOM_HASH_BITS)
+#define REPLAY_POOL_DEFAULT (1 << 20)  // 1M entries, ~28 MB
+#define REPLAY_NIL (-1)
+#define MAX_CLIENT_RANDOM_CACHE_TIME (2 * 86400)
 
-static struct client_random *first_client_random;
-static struct client_random *last_client_random;
+struct replay_entry {
+  unsigned char random[16];
+  int time;
+  int next_by_time;
+  int next_by_hash;
+};
 
-static struct client_random **get_client_random_bucket (unsigned char random[16]) {
+struct replay_cache {
+  volatile int lock;
+  int first;
+  int last;
+  int free_head;
+  int pool_size;
+  int buckets[RANDOM_HASH_SIZE];
+  struct replay_entry pool[];  // flexible array, pool_size entries
+};
+
+static struct replay_cache *replay_cache;
+static int replay_pool_size = REPLAY_POOL_DEFAULT;
+
+static size_t replay_cache_bytes (int pool_size) {
+  return sizeof (struct replay_cache) + (size_t)pool_size * sizeof (struct replay_entry);
+}
+
+static inline void replay_lock (void) {
+  while (__sync_lock_test_and_set (&replay_cache->lock, 1)) {
+    while (replay_cache->lock) {
+      #if defined(__x86_64__) || defined(__i386__)
+      __asm__ __volatile__ ("pause" ::: "memory");
+      #elif defined(__aarch64__)
+      __asm__ __volatile__ ("yield" ::: "memory");
+      #endif
+    }
+  }
+}
+
+static inline void replay_unlock (void) {
+  __sync_lock_release (&replay_cache->lock);
+}
+
+static void replay_cache_setup (int pool_size) {
+  replay_cache->lock = 0;
+  replay_cache->pool_size = pool_size;
+  replay_cache->first = REPLAY_NIL;
+  replay_cache->last = REPLAY_NIL;
+  for (int i = 0; i < RANDOM_HASH_SIZE; i++) {
+    replay_cache->buckets[i] = REPLAY_NIL;
+  }
+  for (int i = 0; i < pool_size - 1; i++) {
+    replay_cache->pool[i].next_by_time = i + 1;
+  }
+  replay_cache->pool[pool_size - 1].next_by_time = REPLAY_NIL;
+  replay_cache->free_head = 0;
+  vkprintf (0, "replay cache: %d slots, %.1f MB\n",
+    pool_size, (double)replay_cache_bytes (pool_size) / (1 << 20));
+}
+
+void replay_cache_set_size (int size) {
+  replay_pool_size = size;
+}
+
+void replay_cache_init_shared (void) {
+  size_t sz = replay_cache_bytes (replay_pool_size);
+  replay_cache = mmap (NULL, sz,
+      PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  assert (replay_cache != MAP_FAILED);
+  replay_cache_setup (replay_pool_size);
+}
+
+void replay_cache_init_local (void) {
+  size_t sz = replay_cache_bytes (replay_pool_size);
+  replay_cache = malloc (sz);
+  assert (replay_cache != NULL);
+  replay_cache_setup (replay_pool_size);
+}
+
+static int get_bucket_id (unsigned char random[16]) {
   int i = RANDOM_HASH_BITS;
   int pos = 0;
   int id = 0;
@@ -1324,91 +1401,112 @@ static struct client_random **get_client_random_bucket (unsigned char random[16]
     id = (id << bits) | (random[pos++] & ((1 << bits) - 1));
     i -= bits;
   }
-  assert (0 <= id && id < (1 << RANDOM_HASH_BITS));
-  return client_randoms + id;
+  return id;
+}
+
+static void replay_unlink_from_hash (int idx) {
+  struct replay_entry *e = &replay_cache->pool[idx];
+  int bid = get_bucket_id (e->random);
+  int *cur = &replay_cache->buckets[bid];
+  while (*cur != idx) {
+    assert (*cur != REPLAY_NIL);
+    cur = &replay_cache->pool[*cur].next_by_hash;
+  }
+  *cur = e->next_by_hash;
+}
+
+static void replay_evict_oldest (void) {
+  int idx = replay_cache->first;
+  if (idx == REPLAY_NIL) { return; }
+  struct replay_entry *e = &replay_cache->pool[idx];
+  replay_cache->first = e->next_by_time;
+  if (replay_cache->first == REPLAY_NIL) {
+    replay_cache->last = REPLAY_NIL;
+  }
+  replay_unlink_from_hash (idx);
+  e->next_by_time = replay_cache->free_head;
+  replay_cache->free_head = idx;
+}
+
+static void delete_old_client_randoms (void) {
+  while (replay_cache->first != REPLAY_NIL && replay_cache->first != replay_cache->last) {
+    struct replay_entry *e = &replay_cache->pool[replay_cache->first];
+    if (e->time > now - MAX_CLIENT_RANDOM_CACHE_TIME) {
+      return;
+    }
+    replay_evict_oldest ();
+  }
 }
 
 static int have_client_random (unsigned char random[16]) {
-  struct client_random *cur = *get_client_random_bucket (random);
-  while (cur != NULL) {
-    if (memcmp (random, cur->random, 16) == 0) {
+  int bid = get_bucket_id (random);
+  int cur = replay_cache->buckets[bid];
+  while (cur != REPLAY_NIL) {
+    if (memcmp (random, replay_cache->pool[cur].random, 16) == 0) {
       return 1;
     }
-    cur = cur->next_by_hash;
+    cur = replay_cache->pool[cur].next_by_hash;
   }
   return 0;
 }
 
 static void add_client_random (unsigned char random[16]) {
-  struct client_random *entry = malloc (sizeof (struct client_random));
-  memcpy (entry->random, random, 16);
-  entry->time = now;
-  entry->next_by_time = NULL;
-  if (last_client_random == NULL) {
-    assert (first_client_random == NULL);
-    first_client_random = last_client_random = entry;
+  if (replay_cache->free_head == REPLAY_NIL) {
+    replay_evict_oldest ();
+  }
+  assert (replay_cache->free_head != REPLAY_NIL);
+
+  int idx = replay_cache->free_head;
+  struct replay_entry *e = &replay_cache->pool[idx];
+  replay_cache->free_head = e->next_by_time;
+
+  memcpy (e->random, random, 16);
+  e->time = now;
+  e->next_by_time = REPLAY_NIL;
+
+  if (replay_cache->last == REPLAY_NIL) {
+    replay_cache->first = replay_cache->last = idx;
   } else {
-    last_client_random->next_by_time = entry;
-    last_client_random = entry;
+    replay_cache->pool[replay_cache->last].next_by_time = idx;
+    replay_cache->last = idx;
   }
 
-  struct client_random **bucket = get_client_random_bucket (random);
-  entry->next_by_hash = *bucket;
-  *bucket = entry;
+  int bid = get_bucket_id (random);
+  e->next_by_hash = replay_cache->buckets[bid];
+  replay_cache->buckets[bid] = idx;
 }
 
-#define MAX_CLIENT_RANDOM_CACHE_TIME 2 * 86400
-
-static void delete_old_client_randoms() {
-  while (first_client_random != last_client_random) {
-    assert (first_client_random != NULL);
-    if (first_client_random->time > now - MAX_CLIENT_RANDOM_CACHE_TIME) {
-      return;
-    }
-
-    struct client_random *entry = first_client_random;
-    assert (entry->next_by_hash == NULL);
-
-    first_client_random = first_client_random->next_by_time;
-
-    struct client_random **cur = get_client_random_bucket (entry->random);
-    while (*cur != entry) {
-      cur = &(*cur)->next_by_hash;
-    }
-    *cur = NULL;
-
-    free (entry);
-  }
+static int get_oldest_time (void) {
+  if (replay_cache->first == REPLAY_NIL) { return 0; }
+  return replay_cache->pool[replay_cache->first].time;
 }
 
-static int is_allowed_timestamp (int timestamp) {
+static int is_allowed_timestamp (int timestamp, int oldest_cache_time) {
+  // do not allow timestamps in the future;
+  // after time synchronization client should always have time in the past
   if (timestamp > now + 3) {
-    // do not allow timestamps in the future
-    // after time synchronization client should always have time in the past
     vkprintf (1, "Disallow request with timestamp %d from the future, now is %d\n", timestamp, now);
     return 0;
   }
 
-  // first_client_random->time is an exact time when corresponding request was received
-  // if the timestamp is bigger than (first_client_random->time + 3), then the current request could be accepted
-  // only after the request with first_client_random, so the client random still must be cached
-  // if the request wasn't accepted, then the client_random still will be cached for MAX_CLIENT_RANDOM_CACHE_TIME seconds,
-  // so we can miss duplicate request only after a lot of time has passed
-  if (first_client_random != NULL && timestamp > first_client_random->time + 3) {
+  // oldest_cache_time is the receive-time of the oldest cached client_random.
+  // If the new timestamp is beyond (oldest_cache_time + 3), the request could only have
+  // been created after that entry, so its client_random must still be in the cache —
+  // any duplicate would have been caught by have_client_random() already.
+  if (oldest_cache_time && timestamp > oldest_cache_time + 3) {
     vkprintf (1, "Allow new request with timestamp %d\n", timestamp);
     return 1;
   }
 
-  // allow all requests with timestamp recently in past, regardless of ability to check repeating client random
-  // the allowed error must be big enough to allow requests after time synchronization
+  // Allow all requests with a recent timestamp regardless of cache coverage.
+  // The window must be large enough to tolerate client clock drift after NTP sync.
   const int MAX_ALLOWED_TIMESTAMP_ERROR = 2 * 60;
   if (timestamp > now - MAX_ALLOWED_TIMESTAMP_ERROR) {
-    // this can happen only first (MAX_ALLOWED_TIMESTAMP_ERROR + 3) sceonds after first_client_random->time
     vkprintf (1, "Allow recent request with timestamp %d without full check for client random duplication\n", timestamp);
     return 1;
   }
 
-  // the request is too old to check client random, do not allow it to force client to synchronize it's time
+  // Too old to verify against the cache — reject to force client to resync time.
   vkprintf (1, "Disallow too old request with timestamp %d\n", timestamp);
   return 0;
 }
@@ -1652,12 +1750,16 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
         memcpy (client_random, client_hello + 11, 32);
         memset (client_hello + 11, '\0', 32);
 
+        replay_lock ();
         if (have_client_random (client_random)) {
+          replay_unlock ();
           vkprintf (1, "Receive again request with the same client random\n");
           RETURN_TLS_ERROR(info);
         }
         add_client_random (client_random);
-        delete_old_client_randoms();
+        delete_old_client_randoms ();
+        int oldest_cache_time = get_oldest_time ();
+        replay_unlock ();
 
         unsigned char expected_random[32];
         int secret_id;
@@ -1672,7 +1774,7 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
           RETURN_TLS_ERROR(info);
         }
         int timestamp = *(int *)(expected_random + 28) ^ *(int *)(client_random + 28);
-        if (!is_allowed_timestamp (timestamp)) {
+        if (!is_allowed_timestamp (timestamp, oldest_cache_time)) {
           RETURN_TLS_ERROR(info);
         }
 

@@ -2644,9 +2644,14 @@ int f_parse_option (int val) {
     direct_mode = 1;
     break;
   case 2004:
-    if (ip_acl_add_stats_net (optarg) < 0) {
-      kprintf ("invalid CIDR for --stats-allow-net: %s\n", optarg);
-      return 2;
+    {
+      char *endp;
+      long v = strtol (optarg, &endp, 10);
+      if (*endp || v < 1024) {
+        kprintf ("Invalid replay-cache-size '%s' (must be >= 1024)\n", optarg);
+        usage ();
+      }
+      replay_cache_set_size ((int)v);
     }
     break;
   case 2005:
@@ -2720,14 +2725,13 @@ void mtfront_prepare_parse_options (void) {
   parse_option ("window-clamp", required_argument, 0, 'W', "sets window clamp for client TCP connections");
   parse_option ("http-ports", required_argument, 0, 'H', "comma-separated list of client (HTTP) ports to listen");
   // parse_option ("outbound-connections-ps", required_argument, 0, 'o', "limits creation rate of outbound connections to mtproto-servers (default %d)", DEFAULT_OUTBOUND_CONNECTION_CREATION_RATE);
-  parse_option ("slaves", required_argument, 0, 'M', "spawn several slave workers; not recommended for TLS-transport mode for better replay protection");
+  parse_option ("slaves", required_argument, 0, 'M', "spawn several slave workers");
   parse_option ("ping-interval", required_argument, 0, 'T', "sets ping interval in second for local TCP connections (default %.3lf)", PING_INTERVAL);
   parse_option ("random-padding-only", no_argument, 0, 'R', "allow only clients with random padding option enabled");
   parse_option ("ip-blocklist", required_argument, 0, 2001, "path to file with CIDR ranges to reject");
   parse_option ("ip-allowlist", required_argument, 0, 2002, "path to file with CIDR ranges to exclusively allow");
   parse_option ("direct", no_argument, 0, 2003, "connect directly to Telegram DCs instead of through ME relays (incompatible with -P)");
-  parse_option ("stats-allow-net", required_argument, 0, 2004, "CIDR range to allow stats access from, e.g. 100.64.0.0/10 (repeatable)");
-  parse_option ("dc-override", required_argument, 0, 2005, "override DC address: dc_id:host:port or dc_id:[ipv6]:port (repeatable, direct mode)");
+  parse_option ("replay-cache-size", required_argument, 0, 2004, "TLS anti-replay pool size in entries (default 1048576; ~28 bytes/entry)");
 }
 
 void mtfront_parse_extra_args (int argc, char *argv[]) /* {{{ */ {
@@ -2781,9 +2785,6 @@ void mtfront_pre_init (void) {
     tcp_rpc_init_proxy_domains();
     drs_delays_enabled = 1;
 
-    if (workers) {
-      kprintf ("It is recommended to not use workers with TLS-transport");
-    }
     if (secret_count == 0) {
       kprintf ("You must specify at least one mtproto-secret to use when using TLS-transport");
       exit (2);
@@ -2807,9 +2808,16 @@ void mtfront_pre_init (void) {
     }
   }
 
+  if (domain_count && !workers) {
+    replay_cache_init_local ();
+  }
+
   if (workers) {
     if (!kdb_hosts_loaded) {
       kdb_load_hosts ();
+    }
+    if (domain_count) {
+      replay_cache_init_shared ();
     }
     WStats = mmap (0, 2 * workers * sizeof (struct worker_stats), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     assert (WStats);

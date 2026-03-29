@@ -172,15 +172,8 @@ if [ -n "$IP_ALLOWLIST" ]; then
     CMD="$CMD --ip-allowlist $IP_ALLOWLIST"
 fi
 
-if [ -n "$STATS_ALLOW_NET" ]; then
-    _save_ifs="$IFS"
-    IFS=','
-    for _net in $STATS_ALLOW_NET; do
-        IFS="$_save_ifs"
-        _net=$(printf '%s' "$_net" | tr -d '[:space:]')
-        [ -n "$_net" ] && CMD="$CMD --stats-allow-net $_net"
-    done
-    IFS="$_save_ifs"
+if [ -n "$REPLAY_CACHE_SIZE" ]; then
+    CMD="$CMD --replay-cache-size $REPLAY_CACHE_SIZE"
 fi
 
 if [ -n "$DC_OVERRIDE" ]; then

@@ -40,3 +40,7 @@ int tcp_rpcs_get_ext_secret_count(void);
 void tcp_rpc_add_proxy_domain (const char *domain);
 
 void tcp_rpc_init_proxy_domains();
+
+void replay_cache_set_size (int size);
+void replay_cache_init_shared (void);
+void replay_cache_init_local (void);
