@@ -140,6 +140,7 @@ int init_dh_params (void) {
 int create_g_a (unsigned char g_a[256], unsigned char a[256]) {
   if (!rpc_BN_ctx) {
     rpc_BN_ctx = BN_CTX_new ();
+    if (!rpc_BN_ctx) { return -1; }
   }
   do {
     if (RAND_bytes (a, 256) != 1) {
@@ -179,6 +180,7 @@ int dh_first_round (unsigned char g_a[256], struct crypto_temp_dh_params *dh_par
 static void dh_inner_round (unsigned char g_ab[256], const unsigned char g_b[256], const unsigned char a[256]) {
   if (!rpc_BN_ctx) {
     rpc_BN_ctx = BN_CTX_new ();
+    assert (rpc_BN_ctx);
   }
   BIGNUM *dh_base = BN_new ();
   assert (BN_bin2bn (g_b, 256, dh_base) == dh_base);
@@ -217,7 +219,7 @@ int dh_second_round (unsigned char g_ab[256], unsigned char g_a[256], const unsi
 
   OPENSSL_cleanse (a, sizeof (a));
 
-  vkprintf (2, "DH key is %02x%02x%02x...%02x%02x%02x\n", g_ab[0], g_ab[1], g_ab[2], g_ab[253], g_ab[254], g_ab[255]);
+  vkprintf (2, "DH key exchange round 2 completed successfully\n");
   MODULE_STAT->tot_dh_rounds[1]++;
   
   return 256;
@@ -230,7 +232,7 @@ int dh_third_round (unsigned char g_ab[256], const unsigned char g_b[256], struc
 
   dh_inner_round (g_ab, g_b, dh_params->a);
 
-  vkprintf (2, "DH key is %02x%02x%02x...%02x%02x%02x\n", g_ab[0], g_ab[1], g_ab[2], g_ab[253], g_ab[254], g_ab[255]);
+  vkprintf (2, "DH key exchange round 3 completed successfully\n");
   MODULE_STAT->tot_dh_rounds[2]++;
 
   OPENSSL_cleanse (dh_params->a, 256);

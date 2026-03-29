@@ -91,7 +91,7 @@ int aes_create_udp_keys (struct aes_key_data *R, struct process_id *local_pid, s
 
 void free_aes_secret (aes_secret_t *secret);
 aes_secret_t *alloc_aes_secret (const char *key, int key_len);
-static inline void aes_secret_decref (aes_secret_t *secret) { if (__sync_add_and_fetch (&secret->refcnt, -1) <= 0) { free_aes_secret (secret); } }
+static inline void aes_secret_decref (aes_secret_t *secret) { if (__sync_add_and_fetch (&secret->refcnt, -1) == 0) { free_aes_secret (secret); } }
 static inline void aes_secret_incref (aes_secret_t *secret) { __sync_fetch_and_add (&secret->refcnt, 1); }
 void free_crypto_temp (void *crypto, int len);
 void *alloc_crypto_temp (int len);

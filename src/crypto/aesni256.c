@@ -43,6 +43,7 @@ EVP_CIPHER_CTX *evp_cipher_ctx_init (const EVP_CIPHER *cipher, unsigned char *ke
 }
 
 void evp_crypt (EVP_CIPHER_CTX *evp_ctx, const void *in, void *out, int size) {
+  assert (size >= 0);
   int len;
   if (EVP_CipherUpdate(evp_ctx, out, &len, in, size) != 1) {
     fprintf(stderr, "FATAL: EVP_CipherUpdate failed\n");

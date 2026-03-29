@@ -31,6 +31,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <openssl/crypto.h>
 
 /*
  * 32-bit integer manipulation macros (little endian)
@@ -283,14 +284,15 @@ void md5( unsigned char *input, int ilen, unsigned char output[16] )
     md5_update( &ctx, input, ilen );
     md5_finish( &ctx, output );
 
-    memset( &ctx, 0, sizeof( md5_context ) );
+    OPENSSL_cleanse( &ctx, sizeof( md5_context ) );
 }
 
 void md5_hex (char *input, int ilen, char output[32]) {
-    static char out[16], hcyf[16] = "0123456789abcdef";
+    static const char hcyf[16] = "0123456789abcdef";
+    unsigned char out[16];
     int i;
 
-    md5 ((unsigned char *) input, ilen, (unsigned char *) out);
+    md5 ((unsigned char *) input, ilen, out);
     for (i = 0; i < 16; i++) {
       output[2*i] = hcyf[(out[i] >> 4) & 15];
       output[2*i+1] = hcyf[out[i] & 15];
@@ -317,7 +319,7 @@ int md5_file( char *path, unsigned char output[16] )
 
     md5_finish( &ctx, output );
 
-    memset( &ctx, 0, sizeof( md5_context ) );
+    OPENSSL_cleanse( &ctx, sizeof( md5_context ) );
 
     if( ferror( f ) != 0 )
     {
@@ -395,7 +397,7 @@ void md5_hmac( unsigned char *key, int keylen, unsigned char *input, int ilen,
     md5_hmac_update( &ctx, input, ilen );
     md5_hmac_finish( &ctx, output );
 
-    memset( &ctx, 0, sizeof( md5_context ) );
+    OPENSSL_cleanse( &ctx, sizeof( md5_context ) );
 }
 
 #if defined(XYSSL_SELF_TEST)

@@ -23,6 +23,7 @@
 #include "net/net-tls-parse.h"
 
 #include <string.h>
+#include <openssl/crypto.h>
 
 #ifndef FUZZ_TARGET
 #include "common/kprintf.h"
@@ -78,7 +79,7 @@ int tls_check_server_hello (const unsigned char *response, int len,
   if (server_hello_length <= 75) {
     FAIL("Receive too short server hello 2");
   }
-  if (memcmp (response + 44, request_session_id, 32) != 0) {
+  if (CRYPTO_memcmp (response + 44, request_session_id, 32) != 0) {
     FAIL("TLS <= 1.2: expected mirrored session_id");
   }
   EXPECT_STR(76, "\x13\x01\x00", "TLS <= 1.2: expected x25519 as a chosen cipher");
