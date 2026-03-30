@@ -1,0 +1,101 @@
+site_name: Teleproxy
+site_url: https://teleproxy.github.io/teleproxy
+site_description: High-performance MTProto proxy for Telegram with DPI resistance, fake-TLS camouflage, and production-grade monitoring
+repo_url: https://github.com/teleproxy/teleproxy
+repo_name: teleproxy/teleproxy
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  logo: assets/logo.svg
+  favicon: assets/favicon.png
+  font:
+    text: Inter
+    code: JetBrains Mono
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+
+extra_css:
+  - assets/extra.css
+
+plugins:
+  - search
+  - i18n:
+      docs_structure: suffix
+      reconfigure_material: true
+      languages:
+        - locale: en
+          name: English
+          default: true
+          build: true
+        - locale: ru
+          name: Русский
+          build: true
+        - locale: fa
+          name: فارسی
+          build: true
+        - locale: vi
+          name: Tiếng Việt
+          build: true
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Comparison: comparison.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quickstart.md
+  - Docker:
+    - Quick Start: docker/index.md
+    - Configuration: docker/configuration.md
+    - Monitoring: docker/monitoring.md
+  - Features:
+    - Fake-TLS (EE Mode): features/fake-tls.md
+    - Direct-to-DC Mode: features/direct-mode.md
+    - IP Access Control: features/access-control.md
+    - Secrets & Limits: features/secrets.md
+    - Monitoring: features/monitoring.md
+  - Deployment:
+    - Systemd: deployment/systemd.md
+    - IPv6: deployment/ipv6.md
+  - Testing: testing.md
+  - Changelog: changelog.md

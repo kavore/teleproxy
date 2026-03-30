@@ -1,0 +1,97 @@
+:root {
+  --md-primary-fg-color: #5D9FD5;
+  --md-primary-bg-color: #fff;
+  --md-accent-fg-color: #7EDCF9;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #7EDCF9;
+  --md-primary-bg-color: #1e1e2e;
+  --md-accent-fg-color: #6A8BFF;
+}
+
+/* Hero section on landing page */
+.tx-hero {
+  margin: 0 -0.8rem;
+  padding: 4rem 0.8rem 2rem;
+  color: var(--md-primary-bg-color);
+  background: linear-gradient(135deg, #2B7A78 0%, #5D9FD5 50%, #6A8BFF 100%);
+}
+
+[data-md-color-scheme="slate"] .tx-hero {
+  background: linear-gradient(135deg, #1a4a49 0%, #2d5f7a 50%, #3a4d8a 100%);
+}
+
+.tx-hero h1 {
+  margin-bottom: 0.5rem;
+  font-size: 2.4rem;
+  font-weight: 700;
+  color: #fff;
+}
+
+.tx-hero p {
+  font-size: 1.2rem;
+  opacity: 0.9;
+  color: #e0f0ff;
+}
+
+.tx-hero .md-button {
+  margin-top: 1rem;
+  margin-right: 0.5rem;
+  color: #fff;
+  border-color: #fff;
+}
+
+.tx-hero .md-button--primary {
+  background-color: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.tx-hero .md-button--primary:hover {
+  background-color: rgba(255, 255, 255, 0.25);
+}
+
+/* Feature grid */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.2rem;
+  margin: 2rem 0;
+}
+
+.feature-grid .feature {
+  padding: 1.2rem;
+  border-radius: 8px;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  transition: box-shadow 0.2s;
+}
+
+.feature-grid .feature:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+.feature-grid .feature h3 {
+  margin-top: 0;
+  font-size: 1rem;
+}
+
+.feature-grid .feature p {
+  margin-bottom: 0;
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+
+/* Callout box */
+.callout {
+  margin: 2rem 0;
+  padding: 1.5rem;
+  border-left: 4px solid var(--md-accent-fg-color);
+  background: var(--md-code-bg-color);
+  border-radius: 0 8px 8px 0;
+  font-size: 1.05rem;
+}
+
+/* RTL support for Farsi */
+[dir="rtl"] .feature-grid {
+  direction: rtl;
+}
