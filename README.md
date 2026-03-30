@@ -6,7 +6,7 @@
 
 High-performance MTProto proxy for Telegram with DPI resistance, fake-TLS camouflage, and production-grade monitoring.
 
-**[Documentation](https://teleproxy.github.io/teleproxy)** | **[Docker Quick Start](https://teleproxy.github.io/teleproxy/docker/)** | **[Comparison](https://teleproxy.github.io/teleproxy/comparison/)**
+**[Documentation](https://teleproxy.github.io)** | **[Docker Quick Start](https://teleproxy.github.io/docker/)** | **[Comparison](https://teleproxy.github.io/comparison/)**
 
 ## Highlights
 
@@ -58,7 +58,7 @@ SECRET=$(head -c 16 /dev/urandom | xxd -ps)
 | E2E tests (real Telegram) | No | Yes | No | No |
 | Fuzz testing (CI) | No | Yes | No | Partial |
 
-[Full comparison →](https://teleproxy.github.io/teleproxy/comparison/)
+[Full comparison →](https://teleproxy.github.io/comparison/)
 
 ## Docker Images
 
