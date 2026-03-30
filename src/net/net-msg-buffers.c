@@ -81,7 +81,6 @@ void fetch_buffers_stat (struct buffers_stat *bs) {
 int buffer_size_values;
 int rwm_peak_recovery;
 struct msg_buffers_chunk ChunkHeaders[MAX_BUFFER_SIZE_VALUES];
-__thread struct msg_buffers_chunk *ChunkSave[MAX_BUFFER_SIZE_VALUES];
 
 int default_buffer_sizes[] = { 48, 512, 2048, 16384, 262144 };
 int default_buffer_sizes_cnt = sizeof (default_buffer_sizes) / sizeof (default_buffer_sizes[0]);
@@ -131,6 +130,8 @@ static void unlock_chunk_head (struct msg_buffers_chunk *CH) {
   CH->magic = MSG_CHUNK_HEAD_MAGIC;
 }
 
+static int try_reclaim_msg_buffers_chunk_locked (struct msg_buffers_chunk *C);
+
 static int try_lock_chunk (struct msg_buffers_chunk *C) {
   if (C->magic != MSG_CHUNK_USED_MAGIC || !__sync_bool_compare_and_swap (&C->magic, MSG_CHUNK_USED_MAGIC, MSG_CHUNK_USED_LOCKED_MAGIC)) {
     return 0;
@@ -151,6 +152,9 @@ static void unlock_chunk (struct msg_buffers_chunk *C) {
       if (!X) { break; }
       assert (X->chunk == C);
       C->free_buffer (C, X);
+    }
+    if (try_reclaim_msg_buffers_chunk_locked (C)) {
+      return;
     }
     C->magic = MSG_CHUNK_USED_MAGIC;
 
@@ -209,7 +213,7 @@ struct msg_buffers_chunk *alloc_new_msg_buffers_chunk (struct msg_buffers_chunk 
   lock_chunk_head (CH);
 
   CH->tot_buffers += chunk_buffers;
-  CH->free_buffers += chunk_buffers;
+  __sync_fetch_and_add (&CH->free_buffers, chunk_buffers);
   CH->tot_chunks++;
   
   C->ch_next = CH->ch_next;
@@ -266,7 +270,7 @@ struct msg_buffers_chunk *alloc_new_msg_buffers_chunk (struct msg_buffers_chunk 
   return C;
 };
 
-void free_msg_buffers_chunk_internal (struct msg_buffers_chunk *C, struct msg_buffers_chunk *CH) {
+static void unlink_msg_buffers_chunk_locked_head (struct msg_buffers_chunk *C, struct msg_buffers_chunk *CH) {
   assert (C->magic == MSG_CHUNK_USED_LOCKED_MAGIC);
   unsigned magic = CH->magic;
   assert (magic == MSG_CHUNK_HEAD_MAGIC || magic == MSG_CHUNK_HEAD_LOCKED_MAGIC);
@@ -276,17 +280,16 @@ void free_msg_buffers_chunk_internal (struct msg_buffers_chunk *C, struct msg_bu
   
   C->magic = 0;
   C->ch_head = 0;
-
-  lock_chunk_head (CH);
   C->ch_next->ch_prev = C->ch_prev;
   C->ch_prev->ch_next = C->ch_next;
 
   CH->tot_buffers -= C->tot_buffers;
-  CH->free_buffers -= C->tot_buffers;
+  __sync_fetch_and_add (&CH->free_buffers, -C->tot_buffers);
   CH->tot_chunks--;
-  unlock_chunk_head (CH);
-  
-  assert (CH->tot_chunks >= 0);  
+}
+
+static void destroy_msg_buffers_chunk (struct msg_buffers_chunk *C) {
+  assert (C->magic == 0);
 
   __sync_fetch_and_add (&allocated_buffer_chunks, -1);
   MODULE_STAT->allocated_buffer_bytes -= MSG_BUFFERS_CHUNK_SIZE;
@@ -296,17 +299,16 @@ void free_msg_buffers_chunk_internal (struct msg_buffers_chunk *C, struct msg_bu
   memset (C, 0, sizeof (struct msg_buffers_chunk));
   free (C);
 
-  int si = buffer_size_values - 1;
-  while (si > 0 && &ChunkHeaders[si-1] != CH) {
-    si--;
-  }
-  assert (si >= 0);
-
-  if (ChunkSave[si] == C) {
-    ChunkSave[si] = NULL;
-  }
-
   free_mp_queue (bq);
+}
+
+void free_msg_buffers_chunk_internal (struct msg_buffers_chunk *C, struct msg_buffers_chunk *CH) {
+  lock_chunk_head (CH);
+  unlink_msg_buffers_chunk_locked_head (C, CH);
+  unlock_chunk_head (CH);
+
+  assert (CH->tot_chunks >= 0);
+  destroy_msg_buffers_chunk (C);
 }
 
 
@@ -315,6 +317,29 @@ void free_msg_buffers_chunk (struct msg_buffers_chunk *C) {
   assert (C->free_cnt[1] == C->tot_buffers);
 
   free_msg_buffers_chunk_internal (C, C->ch_head);
+}
+
+static int try_reclaim_msg_buffers_chunk_locked (struct msg_buffers_chunk *C) {
+  assert (C->magic == MSG_CHUNK_USED_LOCKED_MAGIC);
+  if (C->free_buffer != free_std_msg_buffer || C->free_cnt[1] != C->tot_buffers) {
+    return 0;
+  }
+
+  struct msg_buffers_chunk *CH = C->ch_head;
+  lock_chunk_head (CH);
+
+  int free_buffers = __sync_fetch_and_add (&CH->free_buffers, 0);
+  if (C->free_cnt[1] != C->tot_buffers || CH->tot_chunks <= 1 || free_buffers * 4 < C->tot_buffers * 5) {
+    unlock_chunk_head (CH);
+    return 0;
+  }
+
+  unlink_msg_buffers_chunk_locked_head (C, CH);
+  unlock_chunk_head (CH);
+
+  assert (CH->tot_chunks >= 0);
+  destroy_msg_buffers_chunk (C);
+  return 1;
 }
 
 int init_msg_buffers (long max_buffer_bytes) {
@@ -343,68 +368,49 @@ static inline int get_buffer_no (struct msg_buffers_chunk *C, struct msg_buffer 
   return x;
 }
 
-struct msg_buffer *alloc_msg_buffer_internal (struct msg_buffer *neighbor, struct msg_buffers_chunk *CH, struct msg_buffers_chunk *C_hint, int si) {
+struct msg_buffer *alloc_msg_buffer_internal (struct msg_buffer *neighbor, struct msg_buffers_chunk *CH) {
   unsigned magic = CH->magic;
   assert (magic == MSG_CHUNK_HEAD_MAGIC || magic == MSG_CHUNK_HEAD_LOCKED_MAGIC);
   struct msg_buffers_chunk *C;
-  if (!C_hint) {
+  int found = 0;
+  /* Reclaimed chunks can disappear at unlock time, so alloc always starts from the head list. */
+
+  lock_chunk_head (CH);
+  struct msg_buffers_chunk *CF = CH->ch_next;
+  C = CF;
+  do {
+    if (C == CH) {
+      C = C->ch_next;
+      continue;
+    }
+    if (!C->free_cnt[1]) {
+      C = C->ch_next;
+      continue;
+    }
+    if (!try_lock_chunk (C)) {
+      C = C->ch_next;
+      continue;
+    }
+    if (!C->free_cnt[1]) {
+      unlock_chunk (C);
+      C = C->ch_next;
+      continue;
+    }
+    found = 1;
+    break;
+  } while (C != CF);
+  unlock_chunk_head (CH);
+
+  if (!found) {
     C = alloc_new_msg_buffers_chunk (CH);
     if (!C) {
       return 0;
-    }
-  } else {
-    int found = 0;
-    if (C_hint && C_hint->free_cnt[1] && try_lock_chunk (C_hint)) {
-      assert (C_hint->ch_head == CH);
-      C = C_hint;
-      if (C_hint->free_cnt[1]) {
-        found = 1;
-      } else {
-        unlock_chunk (C_hint);
-      }
-    }
-    if (!found) {
-      lock_chunk_head (CH);
-      struct msg_buffers_chunk *CF = C_hint ? C_hint : CH->ch_next;
-      C = CF;
-      do {
-        if (C == CH) {
-          C = C->ch_next;
-          continue;
-        }
-        if (!C->free_cnt[1]) {
-          C = C->ch_next;
-          continue;
-        }
-        if (!try_lock_chunk (C)) {
-          C = C->ch_next;
-          continue;
-        }
-        if (!C->free_cnt[1]) {
-          unlock_chunk (C);
-          C = C->ch_next;
-          continue;
-        }
-        found = 1;
-        break;
-      } while (C != CF);
-      unlock_chunk_head (CH);
-      if (!found) {
-        C = alloc_new_msg_buffers_chunk (CH);
-        if (!C) {
-          return 0;
-        }
-      }
-      if (C_hint) {
-        __sync_fetch_and_add (&C_hint->refcnt, -1);
-      }
     }
   }
     
   assert (C != CH);
   assert (C->free_cnt[1]);
   assert (C->magic == MSG_CHUNK_USED_LOCKED_MAGIC);
-  ChunkSave[si] = C;
 
   int two_power = C->two_power, i = 1;
 
@@ -469,8 +475,8 @@ struct msg_buffer *alloc_msg_buffer_internal (struct msg_buffer *neighbor, struc
   }
 
   assert (C != CH);
+  __sync_fetch_and_add (&CH->free_buffers, -1);
   unlock_chunk (C);
-  //-- CH->free_buffers;
 
   i -= two_power;
   vkprintf (3, "alloc_msg_buffer(%d) [chunk %p, size %d]: tot_buffers = %d, free_buffers = %d\n", i, C, C->buffer_size, CH->tot_buffers, CH->free_buffers);
@@ -500,7 +506,7 @@ struct msg_buffer *alloc_msg_buffer (struct msg_buffer *neighbor, int size_hint)
       si--;
     }
   }
-  return alloc_msg_buffer_internal (neighbor, &ChunkHeaders[si], ChunkSave[si], si);
+  return alloc_msg_buffer_internal (neighbor, &ChunkHeaders[si]);
 }
 
 int free_std_msg_buffer (struct msg_buffers_chunk *C, struct msg_buffer *X) {
@@ -516,14 +522,10 @@ int free_std_msg_buffer (struct msg_buffers_chunk *C, struct msg_buffer *X) {
 
   X->magic = MSG_BUFFER_FREE_MAGIC;
   X->refcnt = -0x40000000;
-  //++ C->ch_head->free_buffers;
+  __sync_fetch_and_add (&C->ch_head->free_buffers, 1);
   
   MODULE_STAT->total_used_buffers --;
   MODULE_STAT->total_used_buffers_size -= C->buffer_size;
-
-  //if (C->free_cnt[1] == C->tot_buffers && C->ch_head->free_buffers * 4 >= C->tot_buffers * 5) {
-  //  free_msg_buffers_chunk (C);
-  //}
 
   return 1;
 }
