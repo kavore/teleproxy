@@ -70,7 +70,9 @@ DOWNLOAD_TIMEOUTS = {"1mb": 60, "20mb": 300, "100mb": 900}
 # Minimum acceptable throughput (MB/s) for files >= 20 MB.
 # The DRS delay bug (v3.5.0) throttled downloads to ~2 MB/s.
 # Set conservatively — if even this floor is missed, something is broken.
-MIN_THROUGHPUT_MBPS = float(os.environ.get("MIN_THROUGHPUT_MBPS", "0.5"))
+# Test DC is inherently slower (~0.2 MB/s) than production (~2+ MB/s).
+PROD_MIN_THROUGHPUT_MBPS = float(os.environ.get("MIN_THROUGHPUT_MBPS", "0.5"))
+TEST_DC_MIN_THROUGHPUT_MBPS = float(os.environ.get("MIN_THROUGHPUT_MBPS", "0.1"))
 
 
 def _patch_mtproxy_test_dc():
@@ -387,19 +389,23 @@ def main():
         _patch_mtproxy_test_dc()
         test_files = TEST_DC_FILES
         channel_id = TEST_DC_CHANNEL_ID
+        min_tp = TEST_DC_MIN_THROUGHPUT_MBPS
     elif bot_token:
         mode = "bot"
         test_files = PROD_TEST_FILES
         channel_id = PROD_CHANNEL_ID
+        min_tp = PROD_MIN_THROUGHPUT_MBPS
     else:
         mode = "user session"
         test_files = PROD_TEST_FILES
         channel_id = PROD_CHANNEL_ID
+        min_tp = PROD_MIN_THROUGHPUT_MBPS
 
-    # Update the global TEST_FILES / TEST_CHANNEL_ID used by download helper.
-    global TEST_FILES, TEST_CHANNEL_ID
+    # Update the globals used by download helper.
+    global TEST_FILES, TEST_CHANNEL_ID, MIN_THROUGHPUT_MBPS
     TEST_FILES = test_files
     TEST_CHANNEL_ID = channel_id
+    MIN_THROUGHPUT_MBPS = min_tp
 
     print(f"=== Direct Mode E2E Tests ({mode}) ===\n")
 
