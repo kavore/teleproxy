@@ -324,7 +324,7 @@ static struct ip_acl *ip_acl_load (const char *filename) {
 
     struct ip_acl_rule rule;
     if (ip_acl_parse_cidr (s, &rule) < 0) {
-      kprintf ("ip_acl: %s:%d: cannot parse CIDR '%s'\n", filename, lineno, s);
+      kprintf ("ip_acl: %s:%d: cannot parse '%s'\n", filename, lineno, s);
       continue;
     }
 
@@ -419,4 +419,23 @@ int ip_acl_add_stats_net (const char *cidr) {
 
 int ip_acl_check_stats_v4 (unsigned ip) {
   return acl_contains_v4 (stats_allowlist, ip);
+}
+
+int ip_acl_check_stats_v6 (const unsigned char ipv6[16]) {
+  if (!stats_allowlist) {
+    return 0;
+  }
+  if (acl_contains_v6 (stats_allowlist, ipv6)) {
+    return 1;
+  }
+  /* also check v4-mapped addresses against IPv4 rules */
+  unsigned v4 = v6_to_v4_mapped (ipv6);
+  if (v4 && acl_contains_v4 (stats_allowlist, v4)) {
+    return 1;
+  }
+  return 0;
+}
+
+int ip_acl_stats_count (void) {
+  return stats_allowlist ? stats_allowlist->count : 0;
 }

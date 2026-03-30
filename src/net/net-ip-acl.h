@@ -43,6 +43,12 @@ int ip_acl_add_stats_net (const char *cidr);
    Returns 1 if allowed, 0 if not. */
 int ip_acl_check_stats_v4 (unsigned ip);
 
+/* Check whether an IPv6 address is in the stats allowlist.
+   Handles v4-mapped addresses transparently.
+   Returns 1 if allowed, 0 if not. */
+int ip_acl_check_stats_v6 (const unsigned char ipv6[16]);
+
 /* Return count of loaded rules (for stats/debugging). */
 int ip_acl_blocklist_count (void);
 int ip_acl_allowlist_count (void);
+int ip_acl_stats_count (void);

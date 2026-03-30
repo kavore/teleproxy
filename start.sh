@@ -102,6 +102,16 @@ validate_filepath () {
     esac
 }
 
+# Validate a CIDR notation string (IPv4 or IPv6, with optional /prefix)
+validate_cidr () {
+    case "$1" in
+        *[!0-9a-fA-F.:/-]*) echo "ERROR: Invalid CIDR: $1" >&2; exit 1 ;;
+    esac
+    if [ -z "$1" ]; then
+        echo "ERROR: Empty CIDR" >&2; exit 1
+    fi
+}
+
 # --- End validation helpers ---
 
 # Collect secrets from comma-separated SECRET and/or numbered SECRET_N vars.
@@ -229,6 +239,22 @@ fi
 echo "============================="
 echo ""
 
+# Build --stats-allow-net arguments from comma-separated STATS_ALLOW_NET
+STATS_ALLOW_NET_ARGS=""
+if [ -n "$STATS_ALLOW_NET" ]; then
+    _save_ifs="$IFS"
+    IFS=','
+    for _net in $STATS_ALLOW_NET; do
+        IFS="$_save_ifs"
+        _net=$(printf '%s' "$_net" | tr -d '[:space:]')
+        if [ -n "$_net" ]; then
+            validate_cidr "$_net"
+            STATS_ALLOW_NET_ARGS="$STATS_ALLOW_NET_ARGS --stats-allow-net $_net"
+        fi
+    done
+    IFS="$_save_ifs"
+fi
+
 # Start cron daemon for config refresh (only in ME relay mode)
 if [ "$DIRECT_MODE" != "true" ]; then
     crond
@@ -250,6 +276,7 @@ exec ./teleproxy \
     ${IP_BLOCKLIST:+--ip-blocklist "$IP_BLOCKLIST"} \
     ${IP_ALLOWLIST:+--ip-allowlist "$IP_ALLOWLIST"} \
     ${REPLAY_CACHE_SIZE:+--replay-cache-size "$REPLAY_CACHE_SIZE"} \
+    $STATS_ALLOW_NET_ARGS \
     $(if [ "$DIRECT_MODE" = "true" ]; then
         printf -- '--direct -M %s -u teleproxy' "$WORKERS"
     else
