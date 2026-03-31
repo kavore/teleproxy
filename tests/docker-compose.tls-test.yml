@@ -46,7 +46,7 @@ services:
       - tlsnet
     depends_on:
       - teleproxy
-    command: ["python", "test_tls_e2e.py"]
+    command: ["sh", "-c", "python test_tls_e2e.py && python test_tls_fingerprint.py"]
 
 networks:
   tlsnet:

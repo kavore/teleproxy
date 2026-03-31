@@ -38,6 +38,9 @@ Teleproxy is a fork of the original [TelegramMessenger/MTProxy](https://github.c
 | ***Testing & quality*** | | | | |
 | Fuzz testing (CI) | No | Yes | No | Partial |
 | E2E tests (real Telegram clients) | No | Yes | No | No |
+| TLS fingerprint validation (CI) | No | Yes | No | No |
+| CodeQL security scanning | No | Yes | No | No |
+| AddressSanitizer CI | No | Yes | No | No |
 | Static analysis (CI) | No | Yes | Yes | — |
 
 Teleproxy is the only MTProto proxy implementation with automated end-to-end testing against real Telegram infrastructure. The E2E suite connects a Telethon client through the proxy on both obfuscated and fake-TLS transports, verifying authentication and file transfers against Telegram's test datacenter.

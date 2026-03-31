@@ -38,6 +38,9 @@ Teleproxy là một fork của [TelegramMessenger/MTProxy](https://github.com/Te
 | ***Kiểm thử và chất lượng*** | | | | |
 | Fuzz testing (CI) | Không | Có | Không | Một phần |
 | E2E test (client Telegram thực) | Không | Có | Không | Không |
+| Xác thực dấu vân tay TLS (CI) | Không | Có | Không | Không |
+| Quét bảo mật CodeQL | Không | Có | Không | Không |
+| AddressSanitizer CI | Không | Có | Không | Không |
 | Phân tích tĩnh (CI) | Không | Có | Có | — |
 
 Teleproxy là triển khai MTProto proxy duy nhất có kiểm thử đầu-cuối (E2E) tự động trên hạ tầng Telegram thực. Bộ kiểm thử E2E kết nối client Telethon qua proxy trên cả hai transport obfuscated và fake-TLS, xác minh xác thực và truyền file trên datacenter thử nghiệm của Telegram.
