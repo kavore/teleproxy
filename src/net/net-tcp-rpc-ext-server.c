@@ -28,6 +28,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <sched.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1400,8 +1401,7 @@ static inline void replay_lock (void) {
       __asm__ __volatile__ ("yield" ::: "memory");
       #endif
       if (++spins > 1000000) {
-        /* Assume holder crashed; force-break the lock to prevent deadlock */
-        __sync_lock_release (&replay_cache->lock);
+        sched_yield ();
         spins = 0;
       }
     }

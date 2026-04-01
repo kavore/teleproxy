@@ -112,6 +112,43 @@ validate_cidr () {
     fi
 }
 
+validate_dc_override () {
+    _entry=$1
+    _dc=$(printf '%s' "$_entry" | cut -d: -f1)
+    case "$_dc" in
+        ''|*[!0-9]*) echo "ERROR: Invalid DC id in DC_OVERRIDE: $_entry" >&2; exit 1 ;;
+    esac
+
+    _rest=$(printf '%s' "$_entry" | cut -d: -f2-)
+    case "$_rest" in
+        \[*\]:*)
+            _host=${_rest%:*}
+            _host=${_host#\[}
+            _host=${_host%\]}
+            _port=${_rest##*:}
+            ;;
+        *:*:*)
+            echo "ERROR: IPv6 DC_OVERRIDE entries must use [addr]:port: $_entry" >&2
+            exit 1
+            ;;
+        *:*)
+            _host=${_rest%:*}
+            _port=${_rest##*:}
+            ;;
+        *)
+            echo "ERROR: Invalid DC_OVERRIDE entry: $_entry" >&2
+            exit 1
+            ;;
+    esac
+
+    if [ -z "$_host" ]; then
+        echo "ERROR: Missing host in DC_OVERRIDE entry: $_entry" >&2
+        exit 1
+    fi
+
+    validate_port "$_port"
+}
+
 # --- End validation helpers ---
 
 # Collect secrets from comma-separated SECRET and/or numbered SECRET_N vars.
@@ -255,6 +292,21 @@ if [ -n "$STATS_ALLOW_NET" ]; then
     IFS="$_save_ifs"
 fi
 
+DC_OVERRIDE_ARGS=""
+if [ "$DIRECT_MODE" = "true" ] && [ -n "$DC_OVERRIDE" ]; then
+    _save_ifs="$IFS"
+    IFS=','
+    for _dc_entry in $DC_OVERRIDE; do
+        IFS="$_save_ifs"
+        _dc_entry=$(printf '%s' "$_dc_entry" | tr -d '[:space:]')
+        if [ -n "$_dc_entry" ]; then
+            validate_dc_override "$_dc_entry"
+            DC_OVERRIDE_ARGS="$DC_OVERRIDE_ARGS --dc-override $_dc_entry"
+        fi
+    done
+    IFS="$_save_ifs"
+fi
+
 # Start cron daemon for config refresh (only in ME relay mode)
 if [ "$DIRECT_MODE" != "true" ]; then
     crond
@@ -277,6 +329,7 @@ exec ./teleproxy \
     ${IP_ALLOWLIST:+--ip-allowlist "$IP_ALLOWLIST"} \
     ${REPLAY_CACHE_SIZE:+--replay-cache-size "$REPLAY_CACHE_SIZE"} \
     $STATS_ALLOW_NET_ARGS \
+    $DC_OVERRIDE_ARGS \
     $(if [ "$DIRECT_MODE" = "true" ]; then
         printf -- '--direct -M %s -u teleproxy' "$WORKERS"
     else

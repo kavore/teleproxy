@@ -2720,17 +2720,73 @@ int f_parse_option (int val) {
     }
     break;
   case 2005:
+    {
+      char buf[256];
+      int len = strlen (optarg);
+      if (len >= (int)sizeof (buf)) {
+        kprintf ("--dc-override argument too long: %s\n", optarg);
+        usage ();
+      }
+      memcpy (buf, optarg, len + 1);
+
+      char *colon1 = strchr (buf, ':');
+      if (!colon1) {
+        kprintf ("--dc-override: expected dc_id:host:port, got %s\n", optarg);
+        usage ();
+      }
+      *colon1 = 0;
+
+      char *endp;
+      long dc_id = strtol (buf, &endp, 10);
+      if (*endp || dc_id <= 0 || dc_id > INT_MAX) {
+        kprintf ("--dc-override: dc_id must be a positive integer, got %s\n", buf);
+        usage ();
+      }
+
+      char *host_start = colon1 + 1;
+      char *port_str;
+      if (*host_start == '[') {
+        char *bracket = strchr (host_start, ']');
+        if (!bracket || bracket[1] != ':') {
+          kprintf ("--dc-override: bad IPv6 format in %s\n", optarg);
+          usage ();
+        }
+        *bracket = 0;
+        host_start++;
+        port_str = bracket + 2;
+      } else {
+        char *last_colon = strrchr (host_start, ':');
+        if (!last_colon) {
+          kprintf ("--dc-override: expected host:port after dc_id in %s\n", optarg);
+          usage ();
+        }
+        *last_colon = 0;
+        port_str = last_colon + 1;
+      }
+
+      long port = strtol (port_str, &endp, 10);
+      if (*endp || port <= 0 || port > 65535) {
+        kprintf ("--dc-override: bad port %s in %s\n", port_str, optarg);
+        usage ();
+      }
+      if (direct_dc_override ((int)dc_id, host_start, (int)port) < 0) {
+        kprintf ("--dc-override: failed to add %s (bad address or table full)\n", optarg);
+        usage ();
+      }
+    }
+    break;
+  case 2006:
     free (unix_target_path);
     unix_target_path = strdup (optarg);
     break;
-  case 2006:
+  case 2007:
     proxy_protocol_enabled = atoi (optarg);
     if (proxy_protocol_enabled != 1 && proxy_protocol_enabled != 2) {
       kprintf ("--proxy-protocol must be 1 or 2\n");
       usage ();
     }
     break;
-  case 2007:
+  case 2008:
     if (ip_acl_add_stats_net (optarg) < 0) {
       kprintf ("invalid CIDR for --stats-allow-net: %s\n", optarg);
       usage ();
@@ -2758,9 +2814,10 @@ void mtfront_prepare_parse_options (void) {
   parse_option ("ip-allowlist", required_argument, 0, 2002, "path to file with CIDR ranges to exclusively allow");
   parse_option ("direct", no_argument, 0, 2003, "connect directly to Telegram DCs instead of through ME relays (incompatible with -P)");
   parse_option ("replay-cache-size", required_argument, 0, 2004, "TLS anti-replay pool size in entries (default 1048576; ~28 bytes/entry)");
-  parse_option ("unix-target", required_argument, 0, 2005, "route proxy-pass and direct connections to Unix socket path instead of domain IP");
-  parse_option ("proxy-protocol", required_argument, 0, 2006, "send PROXY protocol header to backend: 1 for v1 (text), 2 for v2 (binary); requires --unix-target");
-  parse_option ("stats-allow-net", required_argument, 0, 2007, "CIDR range to allow stats access from, e.g. 100.64.0.0/10 (repeatable)");
+  parse_option ("dc-override", required_argument, 0, 2005, "override DC address: dc_id:host:port or dc_id:[ipv6]:port (repeatable, direct mode)");
+  parse_option ("unix-target", required_argument, 0, 2006, "route fake-TLS fallback traffic for --domain to Unix socket path instead of domain IP");
+  parse_option ("proxy-protocol", required_argument, 0, 2007, "send PROXY protocol header on fake-TLS fallback Unix target: 1 for v1 (text), 2 for v2 (binary); requires --unix-target and --domain");
+  parse_option ("stats-allow-net", required_argument, 0, 2008, "CIDR range to allow stats access from, e.g. 100.64.0.0/10 (repeatable)");
 }
 
 void mtfront_parse_extra_args (int argc, char *argv[]) /* {{{ */ {
@@ -2793,6 +2850,10 @@ void mtfront_pre_init (void) {
     kprintf ("--proxy-protocol requires --unix-target\n");
     exit (2);
   }
+  if (unix_target_path && !domain_count) {
+    kprintf ("--unix-target requires --domain (fake TLS mode)\n");
+    exit (2);
+  }
 
   init_ct_server_mtfront ();
 
@@ -2805,11 +2866,6 @@ void mtfront_pre_init (void) {
     }
 
     vkprintf (1, "config loaded!\n");
-    if (unix_target_path) {
-      vkprintf (0, "proxy-pass fallback: routing to unix socket %s%s\n", unix_target_path,
-                proxy_protocol_enabled == 1 ? " (PROXY protocol v1)" :
-                proxy_protocol_enabled == 2 ? " (PROXY protocol v2)" : "");
-    }
   } else {
     vkprintf (0, "direct mode: connecting directly to Telegram DCs (no ME relay)\n");
   }
@@ -2822,6 +2878,11 @@ void mtfront_pre_init (void) {
   if (domain_count) {
     tcp_rpc_init_proxy_domains();
     drs_delays_enabled = 1;
+    if (unix_target_path) {
+      vkprintf (0, "fake-TLS fallback: routing proxy-pass traffic to unix socket %s%s\n", unix_target_path,
+                proxy_protocol_enabled == 1 ? " (PROXY protocol v1)" :
+                proxy_protocol_enabled == 2 ? " (PROXY protocol v2)" : "");
+    }
 
     if (secret_count == 0) {
       kprintf ("You must specify at least one mtproto-secret to use when using TLS-transport");
