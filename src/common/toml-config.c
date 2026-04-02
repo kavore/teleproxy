@@ -260,18 +260,22 @@ int toml_config_load (const char *path, struct toml_config *cfg,
       snprintf (cfg->domains[0], sizeof (cfg->domains[0]), "%s", d.u.s);
       cfg->domain_count = 1;
     } else if (d.type == TOML_ARRAY) {
-      /* array of domain strings */
-      char domains_buf[TOML_CONFIG_MAX_DOMAINS][64];
-      int cnt = 0;
-      /* Use a temp buffer matching the 64-char array, then copy to 256-char domains */
-      if (parse_string_array (top, "domain", domains_buf, TOML_CONFIG_MAX_DOMAINS, &cnt, errbuf, errlen) < 0) {
+      int n = d.u.arr.size;
+      if (n > TOML_CONFIG_MAX_DOMAINS) {
+        snprintf (errbuf, errlen, "too many domains (%d, max %d)", n, TOML_CONFIG_MAX_DOMAINS);
         toml_free (res);
         return -1;
       }
-      for (int i = 0; i < cnt; i++) {
-        snprintf (cfg->domains[i], sizeof (cfg->domains[i]), "%s", domains_buf[i]);
+      for (int i = 0; i < n; i++) {
+        toml_datum_t elem = d.u.arr.elem[i];
+        if (elem.type != TOML_STRING) {
+          snprintf (errbuf, errlen, "domain[%d]: expected string", i);
+          toml_free (res);
+          return -1;
+        }
+        snprintf (cfg->domains[i], sizeof (cfg->domains[i]), "%s", elem.u.s);
       }
-      cfg->domain_count = cnt;
+      cfg->domain_count = n;
     }
   }
 

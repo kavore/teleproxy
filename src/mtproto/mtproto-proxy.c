@@ -2848,6 +2848,8 @@ void mtfront_pre_init (void) {
     if (toml_cfg.workers >= 0 && workers <= 0) {
       workers = toml_cfg.workers;
     }
+    /* max_connections maps to -C (per-worker client limit), not -c (engine total).
+       -c must be passed on CLI since it's handled by the engine. */
     if (toml_cfg.max_connections > 0 && max_special_connections == 0) {
       max_special_connections = toml_cfg.max_connections;
     }
