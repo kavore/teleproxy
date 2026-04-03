@@ -63,6 +63,7 @@ plugins:
             Configuration: Конфигурация
             Monitoring: Мониторинг
             Features: Возможности
+            DPI Resistance: Устойчивость к DPI
             "Fake-TLS (EE Mode)": "Fake-TLS (режим EE)"
             Direct-to-DC Mode: Прямое подключение к DC
             IP Access Control: Контроль доступа по IP
@@ -87,6 +88,7 @@ plugins:
             Configuration: پیکربندی
             Monitoring: مانیتورینگ
             Features: ویژگی‌ها
+            DPI Resistance: مقاومت در برابر DPI
             "Fake-TLS (EE Mode)": "Fake-TLS (حالت EE)"
             Direct-to-DC Mode: اتصال مستقیم به DC
             IP Access Control: کنترل دسترسی IP
@@ -111,6 +113,7 @@ plugins:
             Configuration: Cấu hình
             Monitoring: Giám sát
             Features: Tính năng
+            DPI Resistance: Chống DPI
             "Fake-TLS (EE Mode)": "Fake-TLS (Chế độ EE)"
             Direct-to-DC Mode: Kết nối trực tiếp đến DC
             IP Access Control: Kiểm soát truy cập IP
@@ -153,6 +156,7 @@ nav:
     - Configuration: docker/configuration.md
     - Monitoring: docker/monitoring.md
   - Features:
+    - DPI Resistance: features/dpi-resistance.md
     - Fake-TLS (EE Mode): features/fake-tls.md
     - Direct-to-DC Mode: features/direct-mode.md
     - IP Access Control: features/access-control.md

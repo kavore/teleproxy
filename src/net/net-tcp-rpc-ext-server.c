@@ -762,12 +762,25 @@ static const struct domain_info *get_domain_info (const char *domain, size_t len
   return NULL;
 }
 
+/* Wider encrypted-data size variation defeats DPI that fingerprints the
+   ServerHello response by its exact byte count.  Real TLS servers vary
+   certificate chain / session ticket sizes by tens of bytes across
+   connections.  We add uniform noise in [-32, +32] clamped to [1000, ∞). */
+#define SH_ENCRYPTED_NOISE_RANGE 65   /* 2*32 + 1 */
+#define SH_ENCRYPTED_NOISE_OFFSET 32
+#define SH_ENCRYPTED_MIN_SIZE 1000
+
 static int get_domain_server_hello_encrypted_size (const struct domain_info *info) {
+  int base = info->server_hello_encrypted_size;
   if (info->use_random_encrypted_size) {
-    int r = rand();
-    return info->server_hello_encrypted_size + ((r >> 1) & 1) - (r & 1);
+    int noise = (int)(rand () % SH_ENCRYPTED_NOISE_RANGE) - SH_ENCRYPTED_NOISE_OFFSET;
+    int size = base + noise;
+    if (size < SH_ENCRYPTED_MIN_SIZE) {
+      size = SH_ENCRYPTED_MIN_SIZE;
+    }
+    return size;
   } else {
-    return info->server_hello_encrypted_size;
+    return base;
   }
 }
 
@@ -1785,9 +1798,18 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
         sha256_hmac (ext_secret[secret_id], 16, buffer, 32 + response_size, server_random);
         memcpy (response_buffer + 11, server_random, 32);
 
-        struct raw_message *m = calloc (sizeof (struct raw_message), 1);
-        rwm_create (m, response_buffer, response_size);
-        mpq_push_w (c->out_queue, m, 0);
+        /* Send ServerHello and CCS+AppData as two separate messages.
+           With TCP_NODELAY, the first write goes out before the second
+           is queued, producing separate TCP segments.  This defeats DPI
+           that pattern-matches the full handshake in a single packet. */
+        struct raw_message *m1 = calloc (sizeof (struct raw_message), 1);
+        rwm_create (m1, response_buffer, 127);              /* ServerHello record */
+        mpq_push_w (c->out_queue, m1, 0);
+        job_signal (JOB_REF_CREATE_PASS (C), JS_RUN);
+
+        struct raw_message *m2 = calloc (sizeof (struct raw_message), 1);
+        rwm_create (m2, response_buffer + 127, response_size - 127); /* CCS + AppData */
+        mpq_push_w (c->out_queue, m2, 0);
         job_signal (JOB_REF_CREATE_PASS (C), JS_RUN);
 
         free (buffer);
