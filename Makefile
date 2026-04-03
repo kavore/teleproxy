@@ -79,7 +79,7 @@ DEPDIRS := ${DEP} $(addprefix ${DEP}/,${PROJECTS})
 ALLDIRS := ${DEPDIRS} ${OBJDIRS}
 
 
-.PHONY:	all clean lint tests test test-tls test-multi-secret test-secret-limit test-ip-acl test-drs-delays test-cdn-dc test-ipv6-direct test-dc-lookup test-config-reload test-check test-link test-install-config docker-image-amd64 docker-run-help-amd64 docker-image-arm64 docker-run-help-arm64 fuzz fuzz-run
+.PHONY:	all clean lint tests test test-tls test-multi-secret test-secret-limit test-ip-acl test-drs-delays test-cdn-dc test-ipv6-direct test-dc-lookup test-config-reload test-check test-link test-stats-port test-install-config docker-image-amd64 docker-run-help-amd64 docker-image-arm64 docker-run-help-arm64 fuzz fuzz-run
 
 EXELIST	:= ${EXE}/teleproxy
 
@@ -342,6 +342,16 @@ test-link:
 		(echo "Link subcommand test failed"; \
 		docker compose -f tests/docker-compose.link-test.yml down; exit 1)
 	docker compose -f tests/docker-compose.link-test.yml down
+
+test-stats-port:
+	@export TELEPROXY_SECRET=$$(head -c 16 /dev/urandom | xxd -ps) && \
+	echo "Testing custom STATS_PORT healthcheck..." && \
+	timeout 120s docker compose -f tests/docker-compose.stats-port-test.yml up -d --build --wait teleproxy && \
+	echo "Custom STATS_PORT healthcheck passed" || \
+		(echo "Stats port healthcheck test failed"; \
+		docker compose -f tests/docker-compose.stats-port-test.yml logs teleproxy; \
+		docker compose -f tests/docker-compose.stats-port-test.yml down; exit 1)
+	docker compose -f tests/docker-compose.stats-port-test.yml down
 
 test-install-config:
 	@echo "Testing install.sh --generate-config..."

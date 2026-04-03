@@ -68,7 +68,7 @@ COPY start.sh /opt/teleproxy/start.sh
 RUN chmod +x /opt/teleproxy/start.sh
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=60s \
-    CMD curl -f http://localhost:8888/stats || exit 1
+    CMD curl -f http://localhost:${STATS_PORT:-8888}/stats || exit 1
 
 # Set entrypoint
 ENTRYPOINT ["/opt/teleproxy/start.sh"]

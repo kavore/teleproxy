@@ -87,6 +87,9 @@ jobs:
     - name: Run Bind Address Tests
       run: make test-bind-address
 
+    - name: Run Stats Port Healthcheck Test
+      run: make test-stats-port
+
     - name: Test install.sh config generation
       run: make test-install-config
 

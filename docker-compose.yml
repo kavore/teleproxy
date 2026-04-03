@@ -35,7 +35,7 @@ services:
       - ./data:/opt/teleproxy/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8888/stats"]
+      test: ["CMD-SHELL", "curl -f http://localhost:${STATS_PORT:-8888}/stats || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -17,7 +17,7 @@ services:
       aclnet:
         ipv4_address: 172.31.0.2
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8888/stats"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8888/stats || exit 1"]
       interval: 2s
       timeout: 5s
       retries: 15
