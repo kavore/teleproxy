@@ -185,13 +185,19 @@ void engine_set_epoll_wait_timeout (int epoll_wait_timeout) /* {{{ */ {
 
 static void raise_file_limit (int maxconn) /* {{{ */ {
   const int gap = 16;
-  if (getuid ()) {
-    struct rlimit rlim;
-    if (getrlimit (RLIMIT_NOFILE, &rlim) < 0) {
-      kprintf ("%s: getrlimit (RLIMIT_NOFILE) fail. %m\n", __func__);
-      exit (1);
+  struct rlimit rlim;
+  if (getrlimit (RLIMIT_NOFILE, &rlim) < 0) {
+    kprintf ("%s: getrlimit (RLIMIT_NOFILE) fail. %m\n", __func__);
+    exit (1);
+  }
+  if (maxconn <= 0) {
+    maxconn = rlim.rlim_cur - gap;
+    if (maxconn < 1024) {
+      maxconn = 1024;
     }
-    if (maxconn > rlim.rlim_cur - gap) {
+  }
+  if (getuid ()) {
+    if (maxconn > (int)rlim.rlim_cur - gap) {
       maxconn = rlim.rlim_cur - gap;
     }
     tcp_set_max_connections (maxconn);
@@ -200,7 +206,9 @@ static void raise_file_limit (int maxconn) /* {{{ */ {
       kprintf ("fatal: cannot raise open file limit to %d\n", maxconn + gap);
       exit (1);
     }
+    tcp_set_max_connections (maxconn);
   }
+  engine_state->maxconn = maxconn;
 }
 /* }}} */
 
@@ -602,7 +610,7 @@ void engine_startup (engine_t *E, server_functions_t *F) /* {{{ */ {
   
   E->sfd = 0;
   E->epoll_wait_timeout = DEFAULT_EPOLL_WAIT_TIMEOUT;
-  E->maxconn = MAX_CONNECTIONS;
+  E->maxconn = 0;
 
   check_server_functions ();
 }

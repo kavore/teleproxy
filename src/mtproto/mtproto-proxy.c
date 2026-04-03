@@ -206,7 +206,20 @@ long long per_secret_connections_rejected[16];
 
 struct ext_connection_ref OutExtConnections[EXT_CONN_TABLE_SIZE];
 struct ext_connection *InExtConnectionHash[EXT_CONN_HASH_SIZE];
-struct ext_connection ExtConnectionHead[MAX_CONNECTIONS];
+struct ext_connection *ExtConnectionHead;
+static int ext_conn_table_size;
+
+void ext_connection_table_init (void) {
+  ext_conn_table_size = tcp_get_max_connections ();
+  if (ext_conn_table_size <= 0) {
+    ext_conn_table_size = MAX_CONNECTIONS;
+  }
+  ExtConnectionHead = calloc (ext_conn_table_size, sizeof (struct ext_connection));
+  assert (ExtConnectionHead && "failed to allocate ExtConnectionHead");
+  kprintf ("Allocated ext_connection table for %d connections (%ld bytes)\n",
+           ext_conn_table_size,
+           (long) ext_conn_table_size * (long) sizeof (struct ext_connection));
+}
 
 void lru_delete_ext_conn (struct ext_connection *Ext);
 
@@ -223,7 +236,7 @@ static inline int ext_conn_hash (int in_fd, long long in_conn_id) {
 // returns the only ext_connection with given in_fd
 struct ext_connection *get_ext_connection_by_in_fd (int in_fd) {
   check_engine_class ();
-  assert ((unsigned) in_fd < MAX_CONNECTIONS);
+  assert ((unsigned) in_fd < ext_conn_table_size);
   struct ext_connection *H = &ExtConnectionHead[in_fd];
   struct ext_connection *Ex = H->i_next;
   assert (H->i_next == H->i_prev);
@@ -284,7 +297,7 @@ struct ext_connection *get_ext_connection_by_in_conn_id (int in_fd, int in_gen, 
   cur->in_fd = in_fd;
   cur->in_gen = in_gen;
   cur->in_conn_id = in_conn_id;
-  assert ((unsigned) in_fd < MAX_CONNECTIONS);
+  assert ((unsigned) in_fd < ext_conn_table_size);
   if (in_fd) {
     struct ext_connection *H = &ExtConnectionHead[in_fd];
     if (!H->i_next) {
@@ -336,7 +349,7 @@ struct ext_connection *create_ext_connection (connection_job_t CI, long long in_
   struct ext_connection *Ex = get_ext_connection_by_in_conn_id (CONN_INFO(CI)->fd, CONN_INFO(CI)->generation, in_conn_id, 2, 0);
   assert (Ex && "ext_connection already exists");
   assert (!Ex->out_fd && !Ex->o_next && !Ex->auth_key_id);
-  assert (!CO || (unsigned) CONN_INFO(CO)->fd < MAX_CONNECTIONS);
+  assert (!CO || (unsigned) CONN_INFO(CO)->fd < ext_conn_table_size);
   assert (CO != CI);
   if (CO) {
     struct ext_connection *H = &ExtConnectionHead[CONN_INFO(CO)->fd];
@@ -359,7 +372,7 @@ void remove_ext_connection (struct ext_connection *Ex, int send_notifications) {
   assert (Ex->out_conn_id);
   assert (Ex == find_ext_connection_by_out_conn_id (Ex->out_conn_id));
   if (Ex->out_fd) {
-    assert ((unsigned) Ex->out_fd < MAX_CONNECTIONS);
+    assert ((unsigned) Ex->out_fd < ext_conn_table_size);
     assert (Ex->o_next);
     if (send_notifications & 1) {
       connection_job_t CO = connection_get_by_fd_generation (Ex->out_fd, Ex->out_gen);
@@ -369,7 +382,7 @@ void remove_ext_connection (struct ext_connection *Ex, int send_notifications) {
     }
   }
   if (Ex->in_fd) {
-    assert ((unsigned) Ex->in_fd < MAX_CONNECTIONS);
+    assert ((unsigned) Ex->in_fd < ext_conn_table_size);
     assert (Ex->i_next);
     if (send_notifications & 2) {
       connection_job_t CI = connection_get_by_fd_generation (Ex->in_fd, Ex->in_gen);
@@ -1331,7 +1344,7 @@ int mtfront_client_ready (connection_job_t C) {
   check_engine_class ();
   struct tcp_rpc_data *D = TCP_RPC_DATA(C);
   int fd = CONN_INFO(C)->fd;
-  assert ((unsigned) fd < MAX_CONNECTIONS);
+  assert ((unsigned) fd < ext_conn_table_size);
   assert (!D->extra_int);
   D->extra_int = get_conn_tag (C);
   vkprintf (1, "Connected to RPC Middle-End (fd=%d)\n", fd);
@@ -1350,7 +1363,7 @@ int mtfront_client_close (connection_job_t C, int who) {
   check_engine_class ();
   struct tcp_rpc_data *D = TCP_RPC_DATA(C);
   int fd = CONN_INFO(C)->fd;
-  assert ((unsigned) fd < MAX_CONNECTIONS);
+  assert ((unsigned) fd < ext_conn_table_size);
   vkprintf (1, "Disconnected from RPC Middle-End (fd=%d)\n", fd);
   if (D->extra_int) {
     assert (D->extra_int == get_conn_tag (C));
@@ -1423,7 +1436,7 @@ int do_close_in_ext_conn (void *_data, int s_len) {
 
 // NET_CPU context
 int mtproto_http_close (connection_job_t C, int who) {
-  assert ((unsigned) CONN_INFO(C)->fd < MAX_CONNECTIONS);
+  assert ((unsigned) CONN_INFO(C)->fd < ext_conn_table_size);
   vkprintf (3, "http connection closing (%d) by %d, %d queries pending\n", CONN_INFO(C)->fd, who, CONN_INFO(C)->pending_queries);
   if (CONN_INFO(C)->pending_queries) {
     assert (CONN_INFO(C)->pending_queries == 1);
@@ -1435,7 +1448,7 @@ int mtproto_http_close (connection_job_t C, int who) {
 }
 
 int mtproto_ext_rpc_ready (connection_job_t C) {
-  assert ((unsigned) CONN_INFO(C)->fd < MAX_CONNECTIONS);
+  assert ((unsigned) CONN_INFO(C)->fd < ext_conn_table_size);
   vkprintf (3, "ext_rpc connection ready (%d)\n", CONN_INFO(C)->fd);
   /* Per-secret increment is NOT done here — this callback fires at connection
      acceptance, before the handshake identifies the secret (extra_int2 = 0).
@@ -1445,7 +1458,7 @@ int mtproto_ext_rpc_ready (connection_job_t C) {
 }
 
 int mtproto_ext_rpc_close (connection_job_t C, int who) {
-  assert ((unsigned) CONN_INFO(C)->fd < MAX_CONNECTIONS);
+  assert ((unsigned) CONN_INFO(C)->fd < ext_conn_table_size);
   vkprintf (3, "ext_rpc connection closing (%d) by %d\n", CONN_INFO(C)->fd, who);
   int sid = TCP_RPC_DATA(C)->extra_int2;
   if (sid > 0 && sid <= 16) {
@@ -1462,7 +1475,7 @@ int mtproto_proxy_rpc_ready (connection_job_t C) {
   check_engine_class ();
   struct tcp_rpc_data *D = TCP_RPC_DATA(C);
   int fd = CONN_INFO(C)->fd;
-  assert ((unsigned) fd < MAX_CONNECTIONS);
+  assert ((unsigned) fd < ext_conn_table_size);
   vkprintf (3, "proxy_rpc connection ready (%d)\n", fd);
   struct ext_connection *H = &ExtConnectionHead[fd];
   assert (!H->i_prev);
@@ -1478,7 +1491,7 @@ int mtproto_proxy_rpc_close (connection_job_t C, int who) {
   check_engine_class ();
   struct tcp_rpc_data *D = TCP_RPC_DATA(C);
   int fd = CONN_INFO(C)->fd;
-  assert ((unsigned) fd < MAX_CONNECTIONS);
+  assert ((unsigned) fd < ext_conn_table_size);
   vkprintf (3, "proxy_rpc connection closing (%d) by %d\n", fd, who);
   if (D->extra_int) {
     assert (D->extra_int == -get_conn_tag (C));
@@ -1995,7 +2008,7 @@ int http_send_message (JOB_REF_ARG (C), struct tl_in_state *tlio_in, int flags) 
 
   assert (CONN_INFO(C)->status == conn_working && CONN_INFO(C)->pending_queries == 1);
 
-  assert ((unsigned) CONN_INFO(C)->fd < MAX_CONNECTIONS);
+  assert ((unsigned) CONN_INFO(C)->fd < ext_conn_table_size);
   vkprintf (3, "detaching http connection (%d)\n", CONN_INFO(C)->fd);
 
   struct ext_connection *Ex = get_ext_connection_by_in_fd (CONN_INFO(C)->fd);
@@ -2128,7 +2141,7 @@ int forward_tcp_query (struct tl_in_state *tlio_in, connection_job_t c, conn_tar
   }
 
   if (Ex) {
-    assert (Ex->out_fd > 0 && Ex->out_fd < MAX_CONNECTIONS);
+    assert (Ex->out_fd > 0 && Ex->out_fd < ext_conn_table_size);
     d = connection_get_by_fd_generation (Ex->out_fd, Ex->out_gen);
     if (!d || !CONN_INFO(d)->target) {
       if (d) {
@@ -2943,6 +2956,8 @@ void mtfront_pre_init (void) {
 }
 
 void mtfront_pre_start (void) {
+  ext_connection_table_init ();
+
   if (direct_mode) {
     return;
   }

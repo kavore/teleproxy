@@ -209,13 +209,13 @@ PROXY_TAG=${PROXY_TAG:-}
 RANDOM_PADDING=${RANDOM_PADDING:-}
 # Domain or host:port for TLS-transport mode (e.g. google.com or 127.0.0.1:8443)
 EE_DOMAIN=${EE_DOMAIN:-}
-# Max connections - lower value avoids rlimit issues in containers
-MAX_CONNECTIONS=${MAX_CONNECTIONS:-60000}
+# Max connections (0 = auto-detect from RLIMIT_NOFILE)
+MAX_CONNECTIONS=${MAX_CONNECTIONS:-0}
 
 validate_port "$PORT"
 validate_port "$STATS_PORT"
 validate_positive_int "$WORKERS" "WORKERS"
-validate_positive_int "$MAX_CONNECTIONS" "MAX_CONNECTIONS"
+if [ "$MAX_CONNECTIONS" -ne 0 ] 2>/dev/null; then validate_positive_int "$MAX_CONNECTIONS" "MAX_CONNECTIONS"; fi
 if [ -n "$EE_DOMAIN" ]; then validate_domain "$EE_DOMAIN"; fi
 if [ -n "$IP_BLOCKLIST" ]; then validate_filepath "$IP_BLOCKLIST"; fi
 if [ -n "$IP_ALLOWLIST" ]; then validate_filepath "$IP_ALLOWLIST"; fi
@@ -318,7 +318,7 @@ exec ./teleproxy \
     -p "$STATS_PORT" \
     -H "$PORT" \
     $(for _s in "$@"; do printf -- '-S %s ' "$_s"; done) \
-    -c "$MAX_CONNECTIONS" \
+    ${MAX_CONNECTIONS:+$([ "$MAX_CONNECTIONS" -ne 0 ] 2>/dev/null && printf -- '-c %s' "$MAX_CONNECTIONS")} \
     --http-stats \
     $NAT_INFO_ARGS \
     ${PREFER_IPV6:+$([ "$PREFER_IPV6" = "true" ] && printf -- '-6')} \

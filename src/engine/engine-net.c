@@ -134,11 +134,10 @@ void engine_server_init (void) {
 }
 
 void set_maxconn (int val) {
-  if (val <= 0) {
-    val = MAX_CONNECTIONS;
-  }
   engine_state->maxconn = val;
-  tcp_set_max_connections (val);
+  if (val > 0) {
+    tcp_set_max_connections (val);
+  }
 }
 
 
@@ -159,7 +158,7 @@ static int f_parse_option_net (int val) {
       {
         char *endp;
         long v = strtol (optarg, &endp, 10);
-        if (*endp || v <= 0) {
+        if (*endp || v < 0) {
           kprintf ("Invalid maxconn value '%s'\n", optarg);
           usage ();
         }

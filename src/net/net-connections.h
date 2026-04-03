@@ -439,6 +439,7 @@ int get_cur_conn_generation (void);
 
 void tcp_set_max_accept_rate (int rate);
 void tcp_set_max_connections (int maxconn);
+int tcp_get_max_connections (void);
 
 extern int max_special_connections, active_special_connections;
 

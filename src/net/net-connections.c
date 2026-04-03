@@ -2047,11 +2047,16 @@ conn_target_job_t create_target (struct conn_target_info *source, int *was_creat
 
 
 
-void tcp_set_max_connections (int maxconn) /* {{{ */ {  
+void tcp_set_max_connections (int maxconn) /* {{{ */ {
   max_connection_fd = maxconn;
   if (!max_special_connections || max_special_connections > maxconn) {
     max_special_connections = maxconn;
   }
+}
+/* }}} */
+
+int tcp_get_max_connections (void) /* {{{ */ {
+  return max_connection_fd;
 }
 /* }}} */
 
