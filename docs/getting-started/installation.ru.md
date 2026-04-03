@@ -1,5 +1,63 @@
 # Установка
 
+## Установка одной командой (рекомендуется)
+
+Скрипт скачает бинарник, создаст systemd-сервис, сгенерирует секрет и выведет ссылку для подключения:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/teleproxy/teleproxy/main/install.sh | sh
+```
+
+Настройка через переменные окружения:
+
+```bash
+PORT=8443 EE_DOMAIN=www.google.com curl -sSL https://raw.githubusercontent.com/teleproxy/teleproxy/main/install.sh | sh
+```
+
+### Несколько секретов
+
+Автоматически сгенерировать несколько секретов:
+
+```bash
+SECRET_COUNT=3 curl -sSL https://raw.githubusercontent.com/teleproxy/teleproxy/main/install.sh | sh
+```
+
+Или передать свои через запятую:
+
+```bash
+SECRET=aabbccdd11223344aabbccdd11223344,eeff00112233445566778899aabbccdd \
+  curl -sSL https://raw.githubusercontent.com/teleproxy/teleproxy/main/install.sh | sh
+```
+
+Нумерованные секреты с метками и лимитами подключений:
+
+```bash
+SECRET_1=aabbccdd11223344aabbccdd11223344 SECRET_LABEL_1=family \
+SECRET_2=eeff00112233445566778899aabbccdd SECRET_LABEL_2=work SECRET_LIMIT_2=500 \
+  curl -sSL https://raw.githubusercontent.com/teleproxy/teleproxy/main/install.sh | sh
+```
+
+Для каждого секрета будет выведен свой QR-код и ссылка. Добавить или удалить секреты после установки:
+
+```bash
+nano /etc/teleproxy/config.toml
+systemctl reload teleproxy
+```
+
+После установки управление сервисом:
+
+```bash
+systemctl status teleproxy       # статус
+systemctl reload teleproxy       # перезагрузка конфига
+nano /etc/teleproxy/config.toml  # редактирование конфига
+```
+
+Удаление:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/teleproxy/teleproxy/main/install.sh | sh -s -- --uninstall
+```
+
 ## Готовый бинарник (любой Linux)
 
 Статически собранные бинарники публикуются с каждым релизом — линковка с musl libc, никаких зависимостей. Скачайте и запускайте.

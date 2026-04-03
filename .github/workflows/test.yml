@@ -87,6 +87,9 @@ jobs:
     - name: Run Bind Address Tests
       run: make test-bind-address
 
+    - name: Test install.sh config generation
+      run: make test-install-config
+
   test-dc-lookup:
     runs-on: ubuntu-latest
     steps:

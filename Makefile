@@ -79,7 +79,7 @@ DEPDIRS := ${DEP} $(addprefix ${DEP}/,${PROJECTS})
 ALLDIRS := ${DEPDIRS} ${OBJDIRS}
 
 
-.PHONY:	all clean lint tests test test-tls test-multi-secret test-secret-limit test-ip-acl test-drs-delays test-cdn-dc test-ipv6-direct test-dc-lookup test-config-reload test-check test-link docker-image-amd64 docker-run-help-amd64 docker-image-arm64 docker-run-help-arm64 fuzz fuzz-run
+.PHONY:	all clean lint tests test test-tls test-multi-secret test-secret-limit test-ip-acl test-drs-delays test-cdn-dc test-ipv6-direct test-dc-lookup test-config-reload test-check test-link test-install-config docker-image-amd64 docker-run-help-amd64 docker-image-arm64 docker-run-help-arm64 fuzz fuzz-run
 
 EXELIST	:= ${EXE}/teleproxy
 
@@ -342,6 +342,54 @@ test-link:
 		(echo "Link subcommand test failed"; \
 		docker compose -f tests/docker-compose.link-test.yml down; exit 1)
 	docker compose -f tests/docker-compose.link-test.yml down
+
+test-install-config:
+	@echo "Testing install.sh --generate-config..."
+	@echo "Test 1: single secret"
+	@out=$$(SECRET=aabbccdd11223344aabbccdd11223344 sh install.sh --generate-config 2>/dev/null) && \
+		echo "$$out" | grep -c '^\[\[secret\]\]' | grep -qx 1 || { echo "FAIL: expected 1 [[secret]] block"; exit 1; } && \
+		echo "$$out" | grep -q 'key = "aabbccdd11223344aabbccdd11223344"' || { echo "FAIL: wrong key"; exit 1; } && \
+		echo "  PASS"
+	@echo "Test 2: comma-separated secrets"
+	@out=$$(SECRET=aaaa1111bbbb2222cccc3333dddd4444,eeee5555ffff6666aaaa7777bbbb8888 sh install.sh --generate-config 2>/dev/null) && \
+		count=$$(echo "$$out" | grep -c '^\[\[secret\]\]') && \
+		[ "$$count" -eq 2 ] || { echo "FAIL: expected 2 [[secret]] blocks, got $$count"; exit 1; } && \
+		echo "  PASS"
+	@echo "Test 3: SECRET_COUNT=3"
+	@out=$$(SECRET_COUNT=3 sh install.sh --generate-config 2>/dev/null) && \
+		count=$$(echo "$$out" | grep -c '^\[\[secret\]\]') && \
+		[ "$$count" -eq 3 ] || { echo "FAIL: expected 3 blocks, got $$count"; exit 1; } && \
+		echo "$$out" | grep -q 'label = "secret_1"' || { echo "FAIL: missing label secret_1"; exit 1; } && \
+		echo "$$out" | grep -q 'label = "secret_2"' || { echo "FAIL: missing label secret_2"; exit 1; } && \
+		echo "$$out" | grep -q 'label = "secret_3"' || { echo "FAIL: missing label secret_3"; exit 1; } && \
+		echo "  PASS"
+	@echo "Test 4: numbered with label"
+	@out=$$(SECRET_1=aabbccdd11223344aabbccdd11223344 SECRET_LABEL_1=family sh install.sh --generate-config 2>/dev/null) && \
+		echo "$$out" | grep -q 'label = "family"' || { echo "FAIL: missing label family"; exit 1; } && \
+		echo "  PASS"
+	@echo "Test 5: numbered with limit"
+	@out=$$(SECRET_1=aabbccdd11223344aabbccdd11223344 SECRET_LIMIT_1=500 sh install.sh --generate-config 2>/dev/null) && \
+		echo "$$out" | grep -q 'limit = 500' || { echo "FAIL: missing limit 500"; exit 1; } && \
+		echo "  PASS"
+	@echo "Test 6: no secret auto-generates one"
+	@out=$$(sh install.sh --generate-config 2>/dev/null) && \
+		count=$$(echo "$$out" | grep -c '^\[\[secret\]\]') && \
+		[ "$$count" -eq 1 ] || { echo "FAIL: expected 1 block, got $$count"; exit 1; } && \
+		echo "$$out" | grep -qE 'key = "[0-9a-f]{32}"' || { echo "FAIL: key not 32 hex"; exit 1; } && \
+		echo "  PASS"
+	@echo "Test 7: SECRET_COUNT=0 errors"
+	@SECRET_COUNT=0 sh install.sh --generate-config >/dev/null 2>&1 && { echo "FAIL: should have errored"; exit 1; } || echo "  PASS"
+	@echo "Test 8: SECRET_COUNT=abc errors"
+	@SECRET_COUNT=abc sh install.sh --generate-config >/dev/null 2>&1 && { echo "FAIL: should have errored"; exit 1; } || echo "  PASS"
+	@echo "Test 9: SECRET + SECRET_COUNT warns"
+	@out=$$(SECRET=aabbccdd11223344aabbccdd11223344 SECRET_COUNT=3 sh install.sh --generate-config 2>&1) && \
+		echo "$$out" | grep -q "SECRET_COUNT ignored" || { echo "FAIL: missing warning"; exit 1; } && \
+		echo "  PASS"
+	@echo "Test 10: EE_DOMAIN in config"
+	@out=$$(SECRET=aabbccdd11223344aabbccdd11223344 EE_DOMAIN=google.com sh install.sh --generate-config 2>/dev/null) && \
+		echo "$$out" | grep -q 'domain = "google.com"' || { echo "FAIL: missing domain"; exit 1; } && \
+		echo "  PASS"
+	@echo "All install-config tests passed!"
 
 test-dc-lookup:
 	$(MAKE) -C fuzz test

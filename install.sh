@@ -8,9 +8,17 @@
 #   PORT              Client port (default: 443)
 #   STATS_PORT        Stats port (default: 8888)
 #   WORKERS           Worker processes (default: 1)
-#   SECRET            Pre-set secret (default: auto-generated)
+#   SECRET            Pre-set secret(s), comma-separated (default: auto-generated)
+#   SECRET_COUNT      Auto-generate this many secrets (1-16)
+#   SECRET_1..16      Numbered secrets (combined with SECRET if both set)
+#   SECRET_LABEL_1..16  Labels for numbered secrets
+#   SECRET_LIMIT_1..16  Per-secret connection limits
 #   EE_DOMAIN         Enable fake-TLS with this domain
 #   TELEPROXY_VERSION Pin a specific version (default: latest)
+#
+# Flags:
+#   --uninstall       Remove Teleproxy and its config
+#   --generate-config Print the TOML config to stdout and exit (no install)
 #
 # Uninstall:
 #   curl -sSL https://raw.githubusercontent.com/teleproxy/teleproxy/main/install.sh | sh -s -- --uninstall
@@ -29,6 +37,7 @@ PORT="${PORT:-443}"
 STATS_PORT="${STATS_PORT:-8888}"
 WORKERS="${WORKERS:-1}"
 SECRET="${SECRET:-}"
+SECRET_COUNT="${SECRET_COUNT:-}"
 EE_DOMAIN="${EE_DOMAIN:-}"
 TELEPROXY_VERSION="${TELEPROXY_VERSION:-}"
 
@@ -60,14 +69,18 @@ do_uninstall() {
     exit 0
 }
 
-# Handle --uninstall flag
+# Handle flags
+GENERATE_CONFIG_ONLY=0
 for arg in "$@"; do
     case "$arg" in
         --uninstall) do_uninstall ;;
+        --generate-config) GENERATE_CONFIG_ONLY=1 ;;
     esac
 done
 
-# ── Checks ─────────────────────────────────────────────────────
+# ── Install (skipped in --generate-config mode) ───────────────
+
+if [ "$GENERATE_CONFIG_ONLY" -eq 0 ]; then
 
 [ "$(id -u)" -ne 0 ] && die "Run as root (or with sudo)"
 
@@ -125,37 +138,124 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then
     info "Created system user: $SERVICE_USER"
 fi
 
-# ── Generate config ────────────────────────────────────────────
-
 mkdir -p "$CONFIG_DIR"
+
+fi  # GENERATE_CONFIG_ONLY
+
+# ── Collect secrets ───────────────────────────────────────────
+# Collected into SEC_FILE (one KEY:LABEL:LIMIT per line), mirroring
+# the Docker entrypoint (start.sh) for consistent behaviour.
+
+SEC_FILE=$(mktemp)
+trap 'rm -f "$SEC_FILE"' EXIT
+
+_generate_one() {
+    "$INSTALL_DIR/teleproxy" generate-secret 2>/dev/null || \
+        head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'
+}
+
+# 1) Comma-separated SECRET=s1,s2,s3
+if [ -n "$SECRET" ]; then
+    _save_ifs="$IFS"
+    IFS=','
+    for _s in $SECRET; do
+        IFS="$_save_ifs"
+        _s=$(printf '%s' "$_s" | tr -d '[:space:]')
+        [ -n "$_s" ] && echo "$_s" >> "$SEC_FILE"
+    done
+    IFS="$_save_ifs"
+fi
+
+# 2) Numbered SECRET_1..SECRET_16 with optional labels/limits
+_i=1
+while [ "$_i" -le 16 ]; do
+    eval "_val=\${SECRET_${_i}:-}"
+    _val=$(printf '%s' "$_val" | tr -d '[:space:]')
+    if [ -n "$_val" ]; then
+        eval "_lbl=\${SECRET_LABEL_${_i}:-}"
+        _lbl=$(printf '%s' "$_lbl" | tr -d '[:space:]')
+        eval "_lim=\${SECRET_LIMIT_${_i}:-}"
+        _lim=$(printf '%s' "$_lim" | tr -d '[:space:]')
+        _suffix=""
+        if [ -n "$_lbl" ] || [ -n "$_lim" ]; then
+            _suffix=":${_lbl}"
+        fi
+        if [ -n "$_lim" ]; then
+            _suffix="${_suffix}:${_lim}"
+        fi
+        echo "${_val}${_suffix}" >> "$SEC_FILE"
+    fi
+    _i=$((_i + 1))
+done
+
+# 3) SECRET_COUNT=N — auto-generate N secrets
+_sec_count=$(wc -l < "$SEC_FILE" | tr -d '[:space:]')
+if [ "$_sec_count" -eq 0 ] && [ -n "$SECRET_COUNT" ]; then
+    case "$SECRET_COUNT" in
+        ''|*[!0-9]*) die "SECRET_COUNT must be a number between 1 and 16 (got: $SECRET_COUNT)" ;;
+    esac
+    [ "$SECRET_COUNT" -ge 1 ] && [ "$SECRET_COUNT" -le 16 ] || \
+        die "SECRET_COUNT must be between 1 and 16 (got: $SECRET_COUNT)"
+    _n=1
+    while [ "$_n" -le "$SECRET_COUNT" ]; do
+        _gen=$(_generate_one)
+        echo "${_gen}:secret_${_n}" >> "$SEC_FILE"
+        _n=$((_n + 1))
+    done
+    info "Auto-generated $SECRET_COUNT secret(s)"
+elif [ "$_sec_count" -gt 0 ] && [ -n "$SECRET_COUNT" ]; then
+    warn "SECRET_COUNT ignored because explicit secrets were provided"
+fi
+
+# 4) Fallback: generate one secret if none collected
+_sec_count=$(wc -l < "$SEC_FILE" | tr -d '[:space:]')
+if [ "$_sec_count" -eq 0 ]; then
+    _gen=$(_generate_one)
+    echo "${_gen}:default" >> "$SEC_FILE"
+fi
+
+# 5) Validate max 16
+_sec_count=$(wc -l < "$SEC_FILE" | tr -d '[:space:]')
+[ "$_sec_count" -le 16 ] || die "Maximum 16 secrets supported, got $_sec_count"
+
+info "Configured $_sec_count secret(s)"
+
+# ── Generate TOML config ─────────────────────────────────────
+
+_generate_toml() {
+    echo "# Teleproxy configuration"
+    echo "# Edit and run: systemctl reload teleproxy"
+    echo "port = $PORT"
+    echo "stats_port = $STATS_PORT"
+    echo "http_stats = true"
+    echo "user = \"$SERVICE_USER\""
+    echo "direct = true"
+    echo "workers = $WORKERS"
+    if [ -n "$EE_DOMAIN" ]; then
+        echo "domain = \"$EE_DOMAIN\""
+    fi
+    echo ""
+    while IFS= read -r _line; do
+        _key=$(printf '%s' "$_line" | cut -d: -f1)
+        _label=$(printf '%s' "$_line" | cut -d: -f2 -s)
+        _limit=$(printf '%s' "$_line" | cut -d: -f3 -s)
+        echo "[[secret]]"
+        echo "key = \"$_key\""
+        [ -n "$_label" ] && echo "label = \"$_label\""
+        [ -n "$_limit" ] && echo "limit = $_limit"
+        echo ""
+    done < "$SEC_FILE"
+}
+
+if [ "$GENERATE_CONFIG_ONLY" -eq 1 ]; then
+    _generate_toml
+    exit 0
+fi
 
 if [ -f "$CONFIG_FILE" ]; then
     info "Keeping existing config: $CONFIG_FILE"
 else
-    # Generate secret
-    if [ -z "$SECRET" ]; then
-        SECRET=$("$INSTALL_DIR/teleproxy" generate-secret 2>/dev/null) || \
-            SECRET=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
-    fi
-
-    {
-        echo "# Teleproxy configuration"
-        echo "# Edit and run: systemctl reload teleproxy"
-        echo "port = $PORT"
-        echo "stats_port = $STATS_PORT"
-        echo "http_stats = true"
-        echo "user = \"$SERVICE_USER\""
-        echo "direct = true"
-        echo "workers = $WORKERS"
-        if [ -n "$EE_DOMAIN" ]; then
-            echo "domain = \"$EE_DOMAIN\""
-        fi
-        echo ""
-        echo "[[secret]]"
-        echo "key = \"$SECRET\""
-        echo "label = \"default\""
-    } > "$CONFIG_FILE"
-
+    _generate_toml > "$CONFIG_FILE"
     chmod 640 "$CONFIG_FILE"
     chown root:"$SERVICE_USER" "$CONFIG_FILE"
     info "Generated config: $CONFIG_FILE"
@@ -195,10 +295,7 @@ info "Installed systemd unit"
 systemctl enable --now teleproxy
 info "Teleproxy is running"
 
-# ── Print connection link ──────────────────────────────────────
-
-# Read secret from config
-CFG_SECRET=$(grep '^key' "$CONFIG_FILE" | head -1 | sed 's/.*"\(.*\)"/\1/')
+# ── Print connection links ─────────────────────────────────────
 
 # Detect external IP
 EXT_IP=""
@@ -209,18 +306,25 @@ fi
 EXT_IP=$(echo "$EXT_IP" | tr -d '[:space:]')
 EXT_IP="${EXT_IP:-<YOUR_SERVER_IP>}"
 
-# Build secret prefix for connection link
-if [ -n "$EE_DOMAIN" ]; then
-    DOMAIN_HEX=$(printf '%s' "$EE_DOMAIN" | od -An -tx1 | tr -d ' \n')
-    LINK_SECRET="ee${CFG_SECRET}${DOMAIN_HEX}"
-else
-    LINK_SECRET="$CFG_SECRET"
-fi
-
 echo ""
-echo "===== Connection Link ====="
-teleproxy link --server "$EXT_IP" --port "$PORT" --secret "$LINK_SECRET"
-echo "==========================="
+echo "===== Connection Links ====="
+while IFS= read -r _line; do
+    _key=$(printf '%s' "$_line" | cut -d: -f1)
+    _label=$(printf '%s' "$_line" | cut -d: -f2 -s)
+    if [ -n "$EE_DOMAIN" ]; then
+        _domain_only=$(printf '%s' "$EE_DOMAIN" | cut -d: -f1)
+        _domain_hex=$(printf '%s' "$_domain_only" | od -An -tx1 | tr -d ' \n')
+        _full="ee${_key}${_domain_hex}"
+    else
+        _full="$_key"
+    fi
+    _label_arg=""
+    [ -n "$_label" ] && _label_arg="--label $_label"
+    teleproxy link --server "$EXT_IP" --port "$PORT" --secret "$_full" $_label_arg
+done < "$SEC_FILE"
+echo ""
+echo "QR codes also at: http://${EXT_IP}:${STATS_PORT}/link"
+echo "============================="
 echo ""
 echo "Manage:"
 echo "  systemctl status teleproxy    # check status"

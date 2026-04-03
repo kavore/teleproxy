@@ -34,6 +34,14 @@ CLI:
 ./teleproxy ... -S cafe...ab:family -S dead...ef:friends
 ```
 
+Installer:
+
+```bash
+SECRET_1=cafe...ab SECRET_LABEL_1=family \
+SECRET_2=dead...ef SECRET_LABEL_2=friends \
+  curl -sSL .../install.sh | sh
+```
+
 Docker:
 
 ```bash
@@ -67,6 +75,14 @@ Prevent a leaked secret from consuming all resources:
 
 # Without a label
 ./teleproxy ... -S cafe...ab::500
+```
+
+Installer:
+
+```bash
+SECRET_1=cafe...ab SECRET_LABEL_1=family SECRET_LIMIT_1=1000 \
+SECRET_2=dead...ef SECRET_LABEL_2=public SECRET_LIMIT_2=200 \
+  curl -sSL .../install.sh | sh
 ```
 
 Docker:

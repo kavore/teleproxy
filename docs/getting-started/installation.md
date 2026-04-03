@@ -14,6 +14,36 @@ Customize with environment variables:
 PORT=8443 EE_DOMAIN=www.google.com curl -sSL https://raw.githubusercontent.com/teleproxy/teleproxy/main/install.sh | sh
 ```
 
+### Multiple Secrets
+
+Auto-generate several secrets at once:
+
+```bash
+SECRET_COUNT=3 curl -sSL https://raw.githubusercontent.com/teleproxy/teleproxy/main/install.sh | sh
+```
+
+Or pass your own as a comma-separated list:
+
+```bash
+SECRET=aabbccdd11223344aabbccdd11223344,eeff00112233445566778899aabbccdd \
+  curl -sSL https://raw.githubusercontent.com/teleproxy/teleproxy/main/install.sh | sh
+```
+
+Numbered secrets with labels and per-secret connection limits:
+
+```bash
+SECRET_1=aabbccdd11223344aabbccdd11223344 SECRET_LABEL_1=family \
+SECRET_2=eeff00112233445566778899aabbccdd SECRET_LABEL_2=work SECRET_LIMIT_2=500 \
+  curl -sSL https://raw.githubusercontent.com/teleproxy/teleproxy/main/install.sh | sh
+```
+
+Each secret gets its own QR code and connection link at the end of installation. You can also add or remove secrets later by editing the config and reloading:
+
+```bash
+nano /etc/teleproxy/config.toml
+systemctl reload teleproxy
+```
+
 After installation, manage with:
 
 ```bash
