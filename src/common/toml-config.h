@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include <stdint.h>
+
 #define TOML_SECRET_LABEL_MAX 32
 #define TOML_CONFIG_MAX_SECRETS  16
 #define TOML_CONFIG_MAX_DOMAINS  16
@@ -19,6 +21,9 @@ struct toml_secret {
   unsigned char key[16];
   char label[TOML_SECRET_LABEL_MAX + 1];
   int limit;
+  long long quota;      /* byte quota, rx+tx combined (0 = unlimited) */
+  int max_ips;          /* unique IP limit (0 = unlimited) */
+  int64_t expires;      /* Unix timestamp (0 = never expires) */
 };
 
 struct toml_dc_override {

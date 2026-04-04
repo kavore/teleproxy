@@ -207,6 +207,10 @@ long long ext_connections, ext_connections_created;
 long long per_secret_connections[16], per_secret_connections_created[16];
 long long per_secret_connections_rejected[16];
 long long per_secret_bytes_received[16], per_secret_bytes_sent[16];
+long long per_secret_rejected_quota[16];
+long long per_secret_rejected_ips[16];
+long long per_secret_rejected_expired[16];
+long long per_secret_unique_ips[16];
 
 struct ext_connection_ref OutExtConnections[EXT_CONN_TABLE_SIZE];
 struct ext_connection *InExtConnectionHash[EXT_CONN_HASH_SIZE];
@@ -436,6 +440,10 @@ struct worker_stats {
   long long per_secret_connections_rejected[16];
   long long per_secret_bytes_received[16];
   long long per_secret_bytes_sent[16];
+  long long per_secret_rejected_quota[16];
+  long long per_secret_rejected_ips[16];
+  long long per_secret_rejected_expired[16];
+  long long per_secret_unique_ips[16];
 };
 
 struct worker_stats *WStats, SumStats;
@@ -512,6 +520,10 @@ static void update_local_stats_copy (struct worker_stats *S) {
     UPD (per_secret_connections_rejected[_i]);
     UPD (per_secret_bytes_received[_i]);
     UPD (per_secret_bytes_sent[_i]);
+    UPD (per_secret_rejected_quota[_i]);
+    UPD (per_secret_rejected_ips[_i]);
+    UPD (per_secret_rejected_expired[_i]);
+    UPD (per_secret_unique_ips[_i]);
   }}
 #undef UPD
   __sync_synchronize();
@@ -605,6 +617,10 @@ static inline void add_stats (struct worker_stats *W) {
     UPD (per_secret_connections_rejected[_i]);
     UPD (per_secret_bytes_received[_i]);
     UPD (per_secret_bytes_sent[_i]);
+    UPD (per_secret_rejected_quota[_i]);
+    UPD (per_secret_rejected_ips[_i]);
+    UPD (per_secret_rejected_expired[_i]);
+    UPD (per_secret_unique_ips[_i]);
   }}
 #undef UPD
 }
@@ -831,16 +847,39 @@ void mtfront_prepare_stats (stats_buffer_t *sb) {
   { int _sc = tcp_rpcs_get_ext_secret_count();
     int _i;
     for (_i = 0; _i < _sc; _i++) {
+      const char *_lbl = tcp_rpcs_get_ext_secret_label (_i);
       sb_printf (sb,
 	       "secret_%s_connections\t%lld\n"
 	       "secret_%s_connections_created\t%lld\n"
-	       "secret_%s_rejected\t%lld\n",
-	       tcp_rpcs_get_ext_secret_label (_i), S(per_secret_connections[_i]),
-	       tcp_rpcs_get_ext_secret_label (_i), S(per_secret_connections_created[_i]),
-	       tcp_rpcs_get_ext_secret_label (_i), S(per_secret_connections_rejected[_i]));
+	       "secret_%s_rejected\t%lld\n"
+	       "secret_%s_bytes_total\t%lld\n"
+	       "secret_%s_unique_ips\t%lld\n"
+	       "secret_%s_rejected_quota\t%lld\n"
+	       "secret_%s_rejected_ips\t%lld\n"
+	       "secret_%s_rejected_expired\t%lld\n",
+	       _lbl, S(per_secret_connections[_i]),
+	       _lbl, S(per_secret_connections_created[_i]),
+	       _lbl, S(per_secret_connections_rejected[_i]),
+	       _lbl, S(per_secret_bytes_received[_i]) + S(per_secret_bytes_sent[_i]),
+	       _lbl, S(per_secret_unique_ips[_i]),
+	       _lbl, S(per_secret_rejected_quota[_i]),
+	       _lbl, S(per_secret_rejected_ips[_i]),
+	       _lbl, S(per_secret_rejected_expired[_i]));
       int _lim = tcp_rpcs_get_ext_secret_limit (_i);
       if (_lim > 0) {
-        sb_printf (sb, "secret_%s_limit\t%d\n", tcp_rpcs_get_ext_secret_label (_i), _lim);
+        sb_printf (sb, "secret_%s_limit\t%d\n", _lbl, _lim);
+      }
+      long long _quota = tcp_rpcs_get_ext_secret_quota (_i);
+      if (_quota > 0) {
+        sb_printf (sb, "secret_%s_quota\t%lld\n", _lbl, _quota);
+      }
+      int _mips = tcp_rpcs_get_ext_secret_max_ips (_i);
+      if (_mips > 0) {
+        sb_printf (sb, "secret_%s_max_ips\t%d\n", _lbl, _mips);
+      }
+      int64_t _exp = tcp_rpcs_get_ext_secret_expires (_i);
+      if (_exp > 0) {
+        sb_printf (sb, "secret_%s_expires\t%lld\n", _lbl, (long long) _exp);
       }
     }
   }
@@ -1089,6 +1128,62 @@ void mtfront_prepare_prometheus_stats (stats_buffer_t *sb) {
       for (_i = 0; _i < _sc; _i++) {
         sb_printf (sb, "teleproxy_secret_bytes_sent_total{secret=\"%s\"} %lld\n",
 	         tcp_rpcs_get_ext_secret_label (_i), S(per_secret_bytes_sent[_i]));
+      }
+      sb_printf (sb,
+	       "# HELP teleproxy_secret_bytes_total Total bytes transferred (rx+tx) per secret.\n"
+	       "# TYPE teleproxy_secret_bytes_total counter\n");
+      for (_i = 0; _i < _sc; _i++) {
+        sb_printf (sb, "teleproxy_secret_bytes_total{secret=\"%s\"} %lld\n",
+	         tcp_rpcs_get_ext_secret_label (_i), S(per_secret_bytes_received[_i]) + S(per_secret_bytes_sent[_i]));
+      }
+      sb_printf (sb,
+	       "# HELP teleproxy_secret_quota_bytes Configured byte quota per secret (0=unlimited).\n"
+	       "# TYPE teleproxy_secret_quota_bytes gauge\n");
+      for (_i = 0; _i < _sc; _i++) {
+        sb_printf (sb, "teleproxy_secret_quota_bytes{secret=\"%s\"} %lld\n",
+	         tcp_rpcs_get_ext_secret_label (_i), tcp_rpcs_get_ext_secret_quota (_i));
+      }
+      sb_printf (sb,
+	       "# HELP teleproxy_secret_max_ips Configured unique IP limit per secret (0=unlimited).\n"
+	       "# TYPE teleproxy_secret_max_ips gauge\n");
+      for (_i = 0; _i < _sc; _i++) {
+        sb_printf (sb, "teleproxy_secret_max_ips{secret=\"%s\"} %d\n",
+	         tcp_rpcs_get_ext_secret_label (_i), tcp_rpcs_get_ext_secret_max_ips (_i));
+      }
+      sb_printf (sb,
+	       "# HELP teleproxy_secret_unique_ips Current unique IPs connected per secret.\n"
+	       "# TYPE teleproxy_secret_unique_ips gauge\n");
+      for (_i = 0; _i < _sc; _i++) {
+        sb_printf (sb, "teleproxy_secret_unique_ips{secret=\"%s\"} %lld\n",
+	         tcp_rpcs_get_ext_secret_label (_i), S(per_secret_unique_ips[_i]));
+      }
+      sb_printf (sb,
+	       "# HELP teleproxy_secret_expires_timestamp Expiration Unix timestamp per secret (0=never).\n"
+	       "# TYPE teleproxy_secret_expires_timestamp gauge\n");
+      for (_i = 0; _i < _sc; _i++) {
+        sb_printf (sb, "teleproxy_secret_expires_timestamp{secret=\"%s\"} %lld\n",
+	         tcp_rpcs_get_ext_secret_label (_i), (long long) tcp_rpcs_get_ext_secret_expires (_i));
+      }
+      sb_printf (sb,
+	       "# HELP teleproxy_secret_rejected_quota_total Connections rejected due to byte quota.\n"
+	       "# TYPE teleproxy_secret_rejected_quota_total counter\n");
+      for (_i = 0; _i < _sc; _i++) {
+        sb_printf (sb, "teleproxy_secret_rejected_quota_total{secret=\"%s\"} %lld\n",
+	         tcp_rpcs_get_ext_secret_label (_i), S(per_secret_rejected_quota[_i]));
+      }
+      sb_printf (sb,
+	       "# HELP teleproxy_secret_rejected_ips_total Connections rejected due to unique IP limit.\n"
+	       "# TYPE teleproxy_secret_rejected_ips_total counter\n");
+      for (_i = 0; _i < _sc; _i++) {
+        sb_printf (sb, "teleproxy_secret_rejected_ips_total{secret=\"%s\"} %lld\n",
+	         tcp_rpcs_get_ext_secret_label (_i), S(per_secret_rejected_ips[_i]));
+      }
+      sb_printf (sb,
+	       "# HELP teleproxy_secret_rejected_expired_total Connections rejected due to secret expiration.\n"
+	       "# TYPE teleproxy_secret_rejected_expired_total counter\n");
+      for (_i = 0; _i < _sc; _i++) {
+        sb_printf (sb, "teleproxy_secret_rejected_expired_total{secret=\"%s\"} %lld\n",
+	         tcp_rpcs_get_ext_secret_label (_i), S(per_secret_rejected_expired[_i]));
       }
     }
   }
@@ -1473,6 +1568,7 @@ int mtproto_ext_rpc_close (connection_job_t C, int who) {
   int sid = TCP_RPC_DATA(C)->extra_int2;
   if (sid > 0 && sid <= 16) {
     per_secret_connections[sid - 1]--;
+    tcp_rpcs_ip_track_disconnect (sid - 1, CONN_INFO(C)->remote_ip, CONN_INFO(C)->remote_ipv6);
   }
   struct ext_connection *Ex = get_ext_connection_by_in_fd (CONN_INFO(C)->fd);
   if (Ex) {
@@ -2700,14 +2796,20 @@ static void apply_toml_secrets (struct toml_config *cfg) {
   unsigned char keys[TOML_CONFIG_MAX_SECRETS][16];
   char labels[TOML_CONFIG_MAX_SECRETS][EXT_SECRET_LABEL_MAX + 1];
   int limits[TOML_CONFIG_MAX_SECRETS];
+  long long quotas[TOML_CONFIG_MAX_SECRETS];
+  int max_ips[TOML_CONFIG_MAX_SECRETS];
+  int64_t expires[TOML_CONFIG_MAX_SECRETS];
 
   for (int i = 0; i < cfg->secret_count; i++) {
     memcpy (keys[i], cfg->secrets[i].key, 16);
     snprintf (labels[i], sizeof (labels[i]), "%s", cfg->secrets[i].label);
     limits[i] = cfg->secrets[i].limit;
+    quotas[i] = cfg->secrets[i].quota;
+    max_ips[i] = cfg->secrets[i].max_ips;
+    expires[i] = cfg->secrets[i].expires;
   }
 
-  tcp_rpcs_reload_ext_secrets (keys, labels, limits, cfg->secret_count);
+  tcp_rpcs_reload_ext_secrets (keys, labels, limits, quotas, max_ips, expires, cfg->secret_count);
 }
 
 static void mtfront_sighup_handler (void) {
@@ -2887,7 +2989,7 @@ int f_parse_option (int val) {
         }
       }
       if (val == 'S') {
-	tcp_rpcs_set_ext_secret (secret, label, conn_limit);
+	tcp_rpcs_set_ext_secret (secret, label, conn_limit, 0, 0, 0);
 	secret_count++;
       } else {
 	memcpy (proxy_tag, secret, sizeof (proxy_tag));

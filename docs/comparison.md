@@ -20,7 +20,7 @@ Teleproxy is a fork of the original [TelegramMessenger/MTProxy](https://github.c
 | SOCKS5 upstream proxy | No | Yes | Yes | Yes |
 | ***Access control*** | | | | |
 | IP blocklist / allowlist | No | Yes | Yes | No |
-| Per-user unique IP limits | No | No | No | Yes |
+| Per-user unique IP limits | No | Yes | No | Yes |
 | Proxy Protocol v1/v2 | No | No | Yes | Yes |
 | ***Deployment*** | | | | |
 | Docker image | ~57 MB | ~8 MB | ~3.5 MB | ~5 MB |

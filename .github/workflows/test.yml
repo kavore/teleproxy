@@ -72,6 +72,9 @@ jobs:
     - name: Run Secret Limit Tests
       run: make test-secret-limit
 
+    - name: Run Secret Quota/IP/Expiry Tests
+      run: make test-secret-quota
+
     - name: Run Config Reload Tests
       run: make test-config-reload
 

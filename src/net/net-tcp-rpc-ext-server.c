@@ -28,6 +28,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -179,7 +180,15 @@ extern long long direct_dc_retries;
 extern long long per_secret_connections[16], per_secret_connections_created[16];
 extern long long per_secret_connections_rejected[16];
 extern long long per_secret_bytes_received[16], per_secret_bytes_sent[16];
+extern long long per_secret_rejected_quota[16];
+extern long long per_secret_rejected_ips[16];
+extern long long per_secret_rejected_expired[16];
+extern long long per_secret_unique_ips[16];
 extern long long transport_errors_received;
+
+/* Forward declarations for enforcement functions defined after secret arrays */
+static int secret_over_quota (int secret_id);
+static void ip_track_disconnect_impl (int secret_id, unsigned ip, const unsigned char *ipv6);
 extern long long quickack_packets_received;
 
 #define DIRECT_MAX_RETRIES 3
@@ -378,6 +387,12 @@ static int tcp_direct_client_parse_execute (connection_job_t C) {
   int sid = TCP_RPC_DATA(C)->extra_int2;
   if (sid > 0 && sid <= 16 && c->in.total_bytes > 0) {
     per_secret_bytes_received[sid - 1] += c->in.total_bytes;
+    if (secret_over_quota (sid - 1)) {
+      per_secret_rejected_quota[sid - 1]++;
+      vkprintf (1, "direct client: secret #%d quota exhausted, closing from %s:%d\n", sid - 1, show_remote_ip (C), c->remote_port);
+      fail_connection (C, -1);
+      return 0;
+    }
   }
   return tcp_direct_relay (C);
 }
@@ -417,6 +432,12 @@ static int tcp_direct_dc_parse_execute (connection_job_t C) {
     int sid = TCP_RPC_DATA((connection_job_t) c->extra)->extra_int2;
     if (sid > 0 && sid <= 16) {
       per_secret_bytes_sent[sid - 1] += c->in.total_bytes;
+      if (secret_over_quota (sid - 1)) {
+        per_secret_rejected_quota[sid - 1]++;
+        vkprintf (1, "direct DC: secret #%d quota exhausted, closing\n", sid - 1);
+        fail_connection (C, -1);
+        return 0;
+      }
     }
   }
   return tcp_direct_relay (C);
@@ -458,6 +479,7 @@ static int tcp_direct_close (connection_job_t C, int who) {
     int sid = TCP_RPC_DATA(C)->extra_int2;
     if (sid > 0 && sid <= 16) {
       per_secret_connections[sid - 1]--;
+      ip_track_disconnect_impl (sid - 1, c->remote_ip, c->remote_ipv6);
     }
   }
   if (is_dc && who != 0) {
@@ -948,8 +970,24 @@ static int ext_secret_pinned = 0;  /* CLI -S secrets that survive SIGHUP reload 
 static int ext_rand_pad_only = 0;
 static char ext_secret_label[16][EXT_SECRET_LABEL_MAX + 1];
 static int ext_secret_limit[16];  /* 0 = unlimited */
+static long long ext_secret_quota[16];   /* byte quota, rx+tx (0 = unlimited) */
+static int ext_secret_max_ips[16];       /* unique IP limit (0 = unlimited) */
+static int64_t ext_secret_expires[16];   /* Unix timestamp (0 = never) */
 
-void tcp_rpcs_set_ext_secret (unsigned char secret[16], const char *label, int limit) {
+/* Per-secret IP tracking for unique-IP limits */
+#define SECRET_MAX_TRACKED_IPS 256
+
+struct tracked_ip {
+  unsigned ip;              /* IPv4 (host byte order), 0 = empty */
+  unsigned char ipv6[16];   /* IPv6 address */
+  int connections;          /* active connections from this IP */
+};
+
+static struct tracked_ip per_secret_ips[16][SECRET_MAX_TRACKED_IPS];
+static int per_secret_unique_ip_count[16];
+
+void tcp_rpcs_set_ext_secret (unsigned char secret[16], const char *label,
+                              int limit, long long quota, int max_ips, int64_t expires) {
   assert (ext_secret_cnt < 16);
   int idx = ext_secret_cnt++;
   memcpy (ext_secret[idx], secret, 16);
@@ -959,11 +997,14 @@ void tcp_rpcs_set_ext_secret (unsigned char secret[16], const char *label, int l
     snprintf (ext_secret_label[idx], sizeof (ext_secret_label[idx]), "secret_%d", idx);
   }
   ext_secret_limit[idx] = limit;
-  if (limit > 0) {
-    vkprintf (0, "Added secret #%d label=[%s] limit=%d\n", idx, ext_secret_label[idx], limit);
-  } else {
-    vkprintf (0, "Added secret #%d label=[%s] (unlimited)\n", idx, ext_secret_label[idx]);
-  }
+  ext_secret_quota[idx] = quota;
+  ext_secret_max_ips[idx] = max_ips;
+  ext_secret_expires[idx] = expires;
+  memset (per_secret_ips[idx], 0, sizeof (per_secret_ips[idx]));
+  per_secret_unique_ip_count[idx] = 0;
+
+  vkprintf (0, "Added secret #%d label=[%s] limit=%d quota=%lld max_ips=%d expires=%lld\n",
+            idx, ext_secret_label[idx], limit, quota, max_ips, (long long) expires);
 }
 
 const char *tcp_rpcs_get_ext_secret_label (int index) {
@@ -974,6 +1015,21 @@ const char *tcp_rpcs_get_ext_secret_label (int index) {
 int tcp_rpcs_get_ext_secret_limit (int index) {
   assert (index >= 0 && index < ext_secret_cnt);
   return ext_secret_limit[index];
+}
+
+long long tcp_rpcs_get_ext_secret_quota (int index) {
+  assert (index >= 0 && index < ext_secret_cnt);
+  return ext_secret_quota[index];
+}
+
+int tcp_rpcs_get_ext_secret_max_ips (int index) {
+  assert (index >= 0 && index < ext_secret_cnt);
+  return ext_secret_max_ips[index];
+}
+
+int64_t tcp_rpcs_get_ext_secret_expires (int index) {
+  assert (index >= 0 && index < ext_secret_cnt);
+  return ext_secret_expires[index];
 }
 
 int tcp_rpcs_get_ext_secret_count (void) {
@@ -988,6 +1044,112 @@ static int secret_over_limit (int secret_id) {
   return per_secret_connections[secret_id] >= eff;
 }
 
+static int secret_expired (int secret_id) {
+  int64_t exp = ext_secret_expires[secret_id];
+  return exp > 0 && now >= exp;
+}
+
+static int secret_over_quota (int secret_id) {
+  long long quota = ext_secret_quota[secret_id];
+  if (quota <= 0) { return 0; }
+  long long eff = workers > 1 ? quota / workers : quota;
+  if (eff < 1) { eff = 1; }
+  long long used = per_secret_bytes_received[secret_id] + per_secret_bytes_sent[secret_id];
+  return used >= eff;
+}
+
+/* Check if a new unique IP would exceed the limit.
+   Returns 0 if the IP is already tracked or under the limit. */
+static int ip_over_limit (int secret_id, unsigned ip, const unsigned char *ipv6) {
+  int limit = ext_secret_max_ips[secret_id];
+  if (limit <= 0) { return 0; }
+
+  /* Check if this IP is already tracked (existing connection from same IP) */
+  static const unsigned char zero_ipv6[16] = {};
+  for (int i = 0; i < SECRET_MAX_TRACKED_IPS; i++) {
+    struct tracked_ip *e = &per_secret_ips[secret_id][i];
+    if (e->connections <= 0) { continue; }
+    if (ip != 0) {
+      if (e->ip == ip) { return 0; }  /* already tracked */
+    } else {
+      if (e->ip == 0 && memcmp (e->ipv6, zero_ipv6, 16) != 0 &&
+          memcmp (e->ipv6, ipv6, 16) == 0) { return 0; }
+    }
+  }
+
+  /* New IP — check against limit */
+  int eff = workers > 1 ? limit / workers : limit;
+  if (eff < 1) { eff = 1; }
+  return per_secret_unique_ip_count[secret_id] >= eff;
+}
+
+/* Track a new connection from an IP.  Must be called AFTER all checks pass. */
+static void ip_track_connect (int secret_id, unsigned ip, const unsigned char *ipv6) {
+  if (ext_secret_max_ips[secret_id] <= 0) { return; }
+
+  static const unsigned char zero_ipv6[16] = {};
+
+  /* Find existing entry for this IP */
+  for (int i = 0; i < SECRET_MAX_TRACKED_IPS; i++) {
+    struct tracked_ip *e = &per_secret_ips[secret_id][i];
+    if (e->connections <= 0) { continue; }
+    if (ip != 0) {
+      if (e->ip == ip) { e->connections++; return; }
+    } else {
+      if (e->ip == 0 && memcmp (e->ipv6, zero_ipv6, 16) != 0 &&
+          memcmp (e->ipv6, ipv6, 16) == 0) { e->connections++; return; }
+    }
+  }
+
+  /* New IP — find an empty slot */
+  for (int i = 0; i < SECRET_MAX_TRACKED_IPS; i++) {
+    struct tracked_ip *e = &per_secret_ips[secret_id][i];
+    if (e->connections <= 0) {
+      e->ip = ip;
+      if (ipv6) { memcpy (e->ipv6, ipv6, 16); } else { memset (e->ipv6, 0, 16); }
+      e->connections = 1;
+      per_secret_unique_ip_count[secret_id]++;
+      per_secret_unique_ips[secret_id]++;
+      return;
+    }
+  }
+
+  /* Table full — shouldn't happen if ip_over_limit was checked first */
+  vkprintf (0, "WARNING: IP tracking table full for secret %d\n", secret_id);
+}
+
+static void ip_track_disconnect_impl (int secret_id, unsigned ip, const unsigned char *ipv6) {
+  if (ext_secret_max_ips[secret_id] <= 0) { return; }
+
+  static const unsigned char zero_ipv6[16] = {};
+
+  for (int i = 0; i < SECRET_MAX_TRACKED_IPS; i++) {
+    struct tracked_ip *e = &per_secret_ips[secret_id][i];
+    if (e->connections <= 0) { continue; }
+    int match = 0;
+    if (ip != 0) {
+      match = (e->ip == ip);
+    } else {
+      match = (e->ip == 0 && memcmp (e->ipv6, zero_ipv6, 16) != 0 &&
+               memcmp (e->ipv6, ipv6, 16) == 0);
+    }
+    if (match) {
+      e->connections--;
+      if (e->connections <= 0) {
+        e->ip = 0;
+        memset (e->ipv6, 0, 16);
+        e->connections = 0;
+        per_secret_unique_ip_count[secret_id]--;
+      }
+      return;
+    }
+  }
+}
+
+void tcp_rpcs_ip_track_disconnect (int secret_id, unsigned ip, const unsigned char *ipv6) {
+  ip_track_disconnect_impl (secret_id, ip, ipv6);
+}
+
 void tcp_rpcs_set_ext_rand_pad_only(int set) {
   ext_rand_pad_only = set;
 }
@@ -998,7 +1160,9 @@ void tcp_rpcs_pin_ext_secrets (void) {
 
 int tcp_rpcs_reload_ext_secrets (const unsigned char secrets[][16],
                                 const char labels[][EXT_SECRET_LABEL_MAX + 1],
-                                const int *limits, int count) {
+                                const int *limits, const long long *quotas,
+                                const int *max_ips_arr, const int64_t *expires_arr,
+                                int count) {
   int total = ext_secret_pinned + count;
   if (total > 16) {
     vkprintf (0, "secret reload: too many secrets (%d pinned + %d from config = %d, max 16)\n",
@@ -1016,15 +1180,21 @@ int tcp_rpcs_reload_ext_secrets (const unsigned char secrets[][16],
       snprintf (ext_secret_label[idx], sizeof (ext_secret_label[idx]), "secret_%d", idx);
     }
     ext_secret_limit[idx] = limits[i];
+    ext_secret_quota[idx] = quotas ? quotas[i] : 0;
+    ext_secret_max_ips[idx] = max_ips_arr ? max_ips_arr[i] : 0;
+    ext_secret_expires[idx] = expires_arr ? expires_arr[i] : 0;
   }
 
   /* Write barrier before updating count */
   __sync_synchronize ();
   ext_secret_cnt = total;
 
-  /* Zero connection counters for reloaded slots */
+  /* Zero connection counters and IP tracking for reloaded slots.
+     Byte counters are NOT reset — quota is cumulative since startup. */
   for (int i = ext_secret_pinned; i < total; i++) {
     per_secret_connections[i] = 0;
+    memset (per_secret_ips[i], 0, sizeof (per_secret_ips[i]));
+    per_secret_unique_ip_count[i] = 0;
   }
 
   vkprintf (0, "secret reload: %d pinned + %d from config = %d total\n",
@@ -2043,9 +2213,27 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
         D->extra_int2 = secret_id + 1;
         vkprintf (1, "TLS handshake matched secret [%s] from %s:%d\n", ext_secret_label[secret_id], show_remote_ip (C), c->remote_port);
 
+        if (secret_expired (secret_id)) {
+          per_secret_rejected_expired[secret_id]++;
+          vkprintf (1, "TLS connection rejected: secret [%s] expired from %s:%d\n", ext_secret_label[secret_id], show_remote_ip (C), c->remote_port);
+          RETURN_TLS_ERROR(info);
+        }
+
         if (secret_over_limit (secret_id)) {
           per_secret_connections_rejected[secret_id]++;
           vkprintf (1, "TLS connection rejected: secret [%s] at limit %d from %s:%d\n", ext_secret_label[secret_id], ext_secret_limit[secret_id], show_remote_ip (C), c->remote_port);
+          RETURN_TLS_ERROR(info);
+        }
+
+        if (secret_over_quota (secret_id)) {
+          per_secret_rejected_quota[secret_id]++;
+          vkprintf (1, "TLS connection rejected: secret [%s] quota exhausted from %s:%d\n", ext_secret_label[secret_id], show_remote_ip (C), c->remote_port);
+          RETURN_TLS_ERROR(info);
+        }
+
+        if (ip_over_limit (secret_id, c->remote_ip, c->remote_ipv6)) {
+          per_secret_rejected_ips[secret_id]++;
+          vkprintf (1, "TLS connection rejected: secret [%s] IP limit %d from %s:%d\n", ext_secret_label[secret_id], ext_secret_max_ips[secret_id], show_remote_ip (C), c->remote_port);
           RETURN_TLS_ERROR(info);
         }
 
@@ -2200,14 +2388,38 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
       }
 
       if (ok) {
-        /* Check per-secret connection limit (non-TLS; TLS checked during handshake) */
+        /* Per-secret checks (non-TLS; TLS checks happen during handshake above) */
         if (!(c->flags & C_IS_TLS)) {
           int _sid = D->extra_int2;
-          if (_sid > 0 && _sid <= 16 && secret_over_limit (_sid - 1)) {
-            per_secret_connections_rejected[_sid - 1]++;
-            vkprintf (1, "connection rejected: secret [%s] at limit %d from %s:%d\n", ext_secret_label[_sid - 1], ext_secret_limit[_sid - 1], show_remote_ip (C), c->remote_port);
-            fail_connection (C, -1);
-            return 0;
+          if (_sid > 0 && _sid <= 16) {
+            if (secret_expired (_sid - 1)) {
+              per_secret_rejected_expired[_sid - 1]++;
+              vkprintf (1, "connection rejected: secret [%s] expired from %s:%d\n", ext_secret_label[_sid - 1], show_remote_ip (C), c->remote_port);
+              D->extra_int2 = 0;
+              fail_connection (C, -1);
+              return 0;
+            }
+            if (secret_over_limit (_sid - 1)) {
+              per_secret_connections_rejected[_sid - 1]++;
+              vkprintf (1, "connection rejected: secret [%s] at limit %d from %s:%d\n", ext_secret_label[_sid - 1], ext_secret_limit[_sid - 1], show_remote_ip (C), c->remote_port);
+              D->extra_int2 = 0;
+              fail_connection (C, -1);
+              return 0;
+            }
+            if (secret_over_quota (_sid - 1)) {
+              per_secret_rejected_quota[_sid - 1]++;
+              vkprintf (1, "connection rejected: secret [%s] quota exhausted from %s:%d\n", ext_secret_label[_sid - 1], show_remote_ip (C), c->remote_port);
+              D->extra_int2 = 0;
+              fail_connection (C, -1);
+              return 0;
+            }
+            if (ip_over_limit (_sid - 1, c->remote_ip, c->remote_ipv6)) {
+              per_secret_rejected_ips[_sid - 1]++;
+              vkprintf (1, "connection rejected: secret [%s] IP limit %d from %s:%d\n", ext_secret_label[_sid - 1], ext_secret_max_ips[_sid - 1], show_remote_ip (C), c->remote_port);
+              D->extra_int2 = 0;
+              fail_connection (C, -1);
+              return 0;
+            }
           }
         }
 
@@ -2219,6 +2431,7 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
           if (_sid > 0 && _sid <= 16) {
             per_secret_connections[_sid - 1]++;
             per_secret_connections_created[_sid - 1]++;
+            ip_track_connect (_sid - 1, c->remote_ip, c->remote_ipv6);
           }
         }
 

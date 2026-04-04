@@ -8,6 +8,9 @@
 | `SECRET_1`...`SECRET_16` | — | Numbered secrets (combined with `SECRET` if both set) |
 | `SECRET_LABEL_1`...`SECRET_LABEL_16` | — | Labels for numbered secrets |
 | `SECRET_LIMIT_1`...`SECRET_LIMIT_16` | — | Per-secret connection limits |
+| `SECRET_QUOTA_1`...`SECRET_QUOTA_16` | — | Per-secret byte quota (e.g. `10737418240` for 10 GB) |
+| `SECRET_MAX_IPS_1`...`SECRET_MAX_IPS_16` | — | Per-secret unique IP limits |
+| `SECRET_EXPIRES_1`...`SECRET_EXPIRES_16` | — | Per-secret expiration (TOML datetime or Unix timestamp) |
 | `PORT` | 443 | Client connection port |
 | `STATS_PORT` | 8888 | Statistics endpoint port |
 | `WORKERS` | 1 | Worker processes |

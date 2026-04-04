@@ -228,15 +228,42 @@ TOML_CONFIG="data/config.toml"
     fi
 
     echo ""
-    for _s in "$@"; do
-        _secret_hex=$(printf '%s' "$_s" | cut -d: -f1)
-        _label=$(printf '%s' "$_s" | cut -d: -f2 -s)
-        _limit=$(printf '%s' "$_s" | cut -d: -f3 -s)
-        echo "[[secret]]"
-        echo "key = \"$_secret_hex\""
-        [ -n "$_label" ] && echo "label = \"$_label\""
-        [ -n "$_limit" ] && echo "limit = $_limit"
-        echo ""
+    # Write secrets from comma-separated SECRET (no advanced features)
+    if [ -n "$SECRET" ]; then
+        _save_ifs2="$IFS"
+        IFS=','
+        for _cs in $SECRET; do
+            IFS="$_save_ifs2"
+            _cs=$(printf '%s' "$_cs" | tr -d '[:space:]')
+            if [ -n "$_cs" ]; then
+                echo "[[secret]]"
+                echo "key = \"$_cs\""
+                echo ""
+            fi
+        done
+        IFS="$_save_ifs2"
+    fi
+    # Write secrets from numbered SECRET_N (with quota/max_ips/expires support)
+    _j=1
+    while [ "$_j" -le 16 ]; do
+        eval "_sval=\${SECRET_${_j}:-}"
+        _sval=$(printf '%s' "$_sval" | tr -d '[:space:]')
+        if [ -n "$_sval" ]; then
+            eval "_slbl=\${SECRET_LABEL_${_j}:-}"
+            eval "_slim=\${SECRET_LIMIT_${_j}:-}"
+            eval "_squota=\${SECRET_QUOTA_${_j}:-}"
+            eval "_smips=\${SECRET_MAX_IPS_${_j}:-}"
+            eval "_sexp=\${SECRET_EXPIRES_${_j}:-}"
+            echo "[[secret]]"
+            echo "key = \"$_sval\""
+            [ -n "$_slbl" ] && echo "label = \"$_slbl\""
+            [ -n "$_slim" ] && echo "limit = $_slim"
+            [ -n "$_squota" ] && echo "quota = $_squota"
+            [ -n "$_smips" ] && echo "max_ips = $_smips"
+            [ -n "$_sexp" ] && echo "expires = $_sexp"
+            echo ""
+        fi
+        _j=$((_j + 1))
     done
 } > "$TOML_CONFIG"
 

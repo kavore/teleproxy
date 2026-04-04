@@ -7,8 +7,11 @@
     (at your option) any later version.
 */
 
+#include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 #include "toml-config.h"
 #include "tomlc17.h"
@@ -47,6 +50,52 @@ static int validate_label (const char *label) {
     }
   }
   return 0;
+}
+
+/* Parse a human-readable byte size: "10G", "500M", "1T", "1024".
+   Case-insensitive, optional trailing 'B'. Returns -1 on error. */
+static long long parse_byte_size (const char *s, char *errbuf, int errlen) {
+  char *endp;
+  long long val = strtoll (s, &endp, 10);
+  if (endp == s || val < 0) {
+    snprintf (errbuf, errlen, "invalid byte size '%s'", s);
+    return -1;
+  }
+  char suffix = toupper ((unsigned char) *endp);
+  if (suffix == 'K') { val *= 1024LL; endp++; }
+  else if (suffix == 'M') { val *= 1024LL * 1024; endp++; }
+  else if (suffix == 'G') { val *= 1024LL * 1024 * 1024; endp++; }
+  else if (suffix == 'T') { val *= 1024LL * 1024 * 1024 * 1024; endp++; }
+  /* skip optional trailing 'B' */
+  if (toupper ((unsigned char) *endp) == 'B') { endp++; }
+  if (*endp != '\0') {
+    snprintf (errbuf, errlen, "invalid byte size '%s'", s);
+    return -1;
+  }
+  return val;
+}
+
+/* Convert a TOML datetime datum to a Unix epoch timestamp.
+   Accepts TOML_DATETIME (assumed UTC) and TOML_DATETIMETZ. */
+static int64_t toml_ts_to_epoch (toml_datum_t d) {
+  struct tm tm;
+  memset (&tm, 0, sizeof (tm));
+  tm.tm_year = d.u.ts.year - 1900;
+  tm.tm_mon = d.u.ts.month - 1;
+  tm.tm_mday = d.u.ts.day;
+  tm.tm_hour = d.u.ts.hour;
+  tm.tm_min = d.u.ts.minute;
+  tm.tm_sec = d.u.ts.second;
+#ifdef __APPLE__
+  time_t t = timegm (&tm);
+#else
+  /* timegm is available on Linux (glibc, musl) */
+  time_t t = timegm (&tm);
+#endif
+  if (d.type == TOML_DATETIMETZ) {
+    t -= d.u.ts.tz * 60;  /* tz is offset in minutes east of UTC */
+  }
+  return (int64_t) t;
 }
 
 static int parse_secrets (toml_datum_t toptab, struct toml_config *cfg,
@@ -109,6 +158,48 @@ static int parse_secrets (toml_datum_t toptab, struct toml_config *cfg,
         return -1;
       }
       cfg->secrets[i].limit = (int) limit.u.int64;
+    }
+
+    /* quota (optional, default 0 = unlimited) — bytes or "10G" style */
+    cfg->secrets[i].quota = 0;
+    toml_datum_t quota = toml_get (entry, "quota");
+    if (quota.type == TOML_INT64) {
+      if (quota.u.int64 < 0) {
+        snprintf (errbuf, errlen, "secret[%d]: quota must be non-negative", i);
+        return -1;
+      }
+      cfg->secrets[i].quota = quota.u.int64;
+    } else if (quota.type == TOML_STRING) {
+      long long qv = parse_byte_size (quota.u.s, errbuf, errlen);
+      if (qv < 0) {
+        snprintf (errbuf, errlen, "secret[%d]: invalid quota '%s'", i, quota.u.s);
+        return -1;
+      }
+      cfg->secrets[i].quota = qv;
+    }
+
+    /* max_ips (optional, default 0 = unlimited) */
+    cfg->secrets[i].max_ips = 0;
+    toml_datum_t max_ips = toml_get (entry, "max_ips");
+    if (max_ips.type == TOML_INT64) {
+      if (max_ips.u.int64 < 0) {
+        snprintf (errbuf, errlen, "secret[%d]: max_ips must be non-negative", i);
+        return -1;
+      }
+      cfg->secrets[i].max_ips = (int) max_ips.u.int64;
+    }
+
+    /* expires (optional, default 0 = never) — TOML datetime or integer epoch */
+    cfg->secrets[i].expires = 0;
+    toml_datum_t expires = toml_get (entry, "expires");
+    if (expires.type == TOML_DATETIME || expires.type == TOML_DATETIMETZ) {
+      cfg->secrets[i].expires = toml_ts_to_epoch (expires);
+    } else if (expires.type == TOML_INT64) {
+      if (expires.u.int64 < 0) {
+        snprintf (errbuf, errlen, "secret[%d]: expires must be non-negative", i);
+        return -1;
+      }
+      cfg->secrets[i].expires = expires.u.int64;
     }
 
     cfg->secret_count++;
