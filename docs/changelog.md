@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.7.0
+
+Per-secret quotas, unique-IP limits, and expiration ([#26](https://github.com/teleproxy/teleproxy/issues/26)).
+
+- **Data quota** — cap total bytes transferred per secret; active connections are closed and new ones rejected when exhausted. Configurable in bytes or human-readable sizes (`quota = "10G"`)
+- **Unique IP limit** — cap how many distinct client IPs can use a secret simultaneously (`max_ips = 5`). Additional connections from an already-connected IP are always allowed
+- **Secret expiration** — auto-disable a secret after a timestamp (`expires = 2025-12-31T23:59:59Z`). Existing connections continue; only new ones are rejected
+- Per-reason rejection counters in Prometheus and plain-text stats (`rejected_quota`, `rejected_ips`, `rejected_expired`)
+- Docker env vars: `SECRET_QUOTA_N`, `SECRET_MAX_IPS_N`, `SECRET_EXPIRES_N`
+- SOCKS5 upstream proxy support ([#22](https://github.com/teleproxy/teleproxy/issues/22))
+- One-click cloud deploy page
+- Documentation: install/upgrade instructions, SOCKS5 docs, Observatory link
+
 ## 4.6.0
 
 DPI resistance and operational improvements.
