@@ -8,6 +8,11 @@ on:
 
 permissions:
   contents: read
+  issues: write
+
+concurrency:
+  group: telegram-notify
+  cancel-in-progress: false
 
 jobs:
   notify:
@@ -17,66 +22,144 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_GROUP_ID: ${{ secrets.TELEGRAM_GROUP_ID }}
         with:
           script: |
             const token = process.env.TELEGRAM_BOT_TOKEN;
             const chatId = process.env.TELEGRAM_CHAT_ID;
+            const groupId = process.env.TELEGRAM_GROUP_ID;
             if (!token || !chatId) return;
 
             function mdToHtml(md) {
               let s = md;
-              // Escape HTML entities first
               s = s.replace(/&/g, '&amp;');
               s = s.replace(/</g, '&lt;');
               s = s.replace(/>/g, '&gt;');
-              // Markdown headings → bold
               s = s.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>');
-              // Inline code (before bold/italic to avoid conflicts)
               s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
-              // Bold **text** or __text__
               s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
               s = s.replace(/__(.+?)__/g, '<b>$1</b>');
-              // Italic *text* or _text_ (not inside words)
               s = s.replace(/(?<!\w)\*([^*]+)\*(?!\w)/g, '<i>$1</i>');
               s = s.replace(/(?<!\w)_([^_]+)_(?!\w)/g, '<i>$1</i>');
-              // Links [text](url)
               s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
               return s;
             }
 
-            let text = '';
-            const event = context.eventName;
-            const repo = context.payload.repository.full_name;
-
-            if (event === 'issues' && context.payload.action === 'opened') {
-              // Skip bot-created issues
-              if (context.payload.issue.user.type === 'Bot') return;
-              const i = context.payload.issue;
-              text = `📋 <b>New Issue #${i.number}</b>: ${i.title}\n\nby ${i.user.login}\n<a href="${i.html_url}">View issue</a>`;
-            } else if (event === 'issue_comment' && context.payload.action === 'created') {
-              // Only post maintainer comments
-              const c = context.payload.comment;
-              if (c.user.login !== 'rkline0x') return;
-              // Skip auto-reply bot comments
-              if (c.user.type === 'Bot') return;
-              const i = context.payload.issue;
-              const snippet = mdToHtml(c.body.substring(0, 2000));
-              text = `💬 <b>Comment on #${i.number}</b>: ${i.title}\n\n${snippet}\n\n<a href="${c.html_url}">View comment</a>`;
+            async function tgApi(method, body) {
+              const resp = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+              });
+              return resp.json();
             }
 
-            if (!text) return;
+            // Find the thread_id for an issue by scanning its comments for the tracking marker
+            async function findThreadId(issueNumber) {
+              if (!groupId) return null;
+              const comments = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                per_page: 100
+              });
+              for (const c of comments.data) {
+                const match = c.body.match(/<!-- tg_thread_id:(\d+) -->/);
+                if (match) return parseInt(match[1], 10);
+              }
+              return null;
+            }
 
-            const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
+            // After posting to channel, capture the auto-forwarded message in the discussion group
+            async function captureThreadId(channelMsgId) {
+              if (!groupId) return null;
+              // Wait for Telegram to auto-forward the channel post to the discussion group
+              await new Promise(r => setTimeout(r, 3000));
+
+              const updates = await tgApi('getUpdates', {});
+              if (!updates.ok || !updates.result.length) return null;
+
+              let threadId = null;
+              for (const u of updates.result) {
+                const m = u.message;
+                if (!m || !m.is_automatic_forward) continue;
+                if (m.forward_origin && m.forward_origin.message_id === channelMsgId) {
+                  threadId = m.message_id;
+                  break;
+                }
+              }
+
+              // Confirm all updates to prevent pileup
+              const lastId = updates.result[updates.result.length - 1].update_id;
+              await tgApi('getUpdates', { offset: lastId + 1 });
+
+              return threadId;
+            }
+
+            const event = context.eventName;
+
+            if (event === 'issues' && context.payload.action === 'opened') {
+              if (context.payload.issue.user.type === 'Bot') return;
+              const i = context.payload.issue;
+              const text = `📋 <b>New Issue #${i.number}</b>: ${i.title}\n\nby ${i.user.login}\n<a href="${i.html_url}">View issue</a>`;
+
+              const result = await tgApi('sendMessage', {
                 chat_id: chatId,
                 text: text,
                 parse_mode: 'HTML',
                 disable_web_page_preview: true
-              })
-            });
-            const result = await resp.json();
-            if (!result.ok) {
-              core.setFailed(`Telegram notification failed: ${JSON.stringify(result)}`);
+              });
+
+              if (!result.ok) {
+                core.setFailed(`Telegram notification failed: ${JSON.stringify(result)}`);
+                return;
+              }
+
+              // Capture the discussion group thread_id and store it on the issue
+              const channelMsgId = result.result.message_id;
+              const threadId = await captureThreadId(channelMsgId);
+              if (threadId) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: i.number,
+                  body: `🔔 Posted to Telegram channel\n<!-- tg_thread_id:${threadId} -->`
+                });
+              }
+
+            } else if (event === 'issue_comment' && context.payload.action === 'created') {
+              const c = context.payload.comment;
+              if (c.user.login !== 'rkline0x') return;
+              if (c.user.type === 'Bot') return;
+              const i = context.payload.issue;
+              const snippet = mdToHtml(c.body.substring(0, 2000));
+              const text = `💬 <b>Comment on #${i.number}</b>: ${i.title}\n\n${snippet}\n\n<a href="${c.html_url}">View comment</a>`;
+
+              // Try to post as a reply in the discussion group thread
+              const threadId = await findThreadId(i.number);
+              if (threadId && groupId) {
+                const result = await tgApi('sendMessage', {
+                  chat_id: groupId,
+                  message_thread_id: threadId,
+                  text: text,
+                  parse_mode: 'HTML',
+                  disable_web_page_preview: true
+                });
+                if (!result.ok) {
+                  core.warning(`Thread reply failed, falling back to channel: ${JSON.stringify(result)}`);
+                } else {
+                  return;
+                }
+              }
+
+              // Fallback: post as standalone channel message
+              const result = await tgApi('sendMessage', {
+                chat_id: chatId,
+                text: text,
+                parse_mode: 'HTML',
+                disable_web_page_preview: true
+              });
+              if (!result.ok) {
+                core.setFailed(`Telegram notification failed: ${JSON.stringify(result)}`);
+              }
             }
