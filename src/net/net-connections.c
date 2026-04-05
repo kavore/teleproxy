@@ -993,7 +993,7 @@ int net_server_socket_writer (socket_connection_job_t C) /* {{{ */{
 
     if (r <= 0) {
       if (r < 0 && errno == EAGAIN) {
-        if (++c->eagain_count > 100) {
+        if (++c->eagain_count > 5000) {
           kprintf ("Too much EAGAINs for connection %d (%s), dropping\n", c->fd, show_remote_socket_ip (C));
           job_signal (JOB_REF_CREATE_PASS (C), JS_ABORT);
           __sync_fetch_and_or (&c->flags, C_NET_FAILED);
