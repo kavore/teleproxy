@@ -115,7 +115,11 @@ int cpu_tcp_server_reader (connection_job_t C) /* {{{ */ {
   }
         
   if (c->crypto) {
-    assert (c->type->crypto_decrypt_input (C) >= 0);
+    if (c->type->crypto_decrypt_input (C) < 0) {
+      vkprintf (1, "crypto_decrypt_input failed (fd=%d), dropping connection\n", c->fd);
+      fail_connection (C, -1);
+      return -1;
+    }
   }
 
   int r = c->in.total_bytes;

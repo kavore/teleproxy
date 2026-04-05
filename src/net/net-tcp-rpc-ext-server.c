@@ -2080,7 +2080,11 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
               D->flags |= RPC_F_COMPACT | RPC_F_EXTMODE2;
               break;
           }
-          assert (c->type->crypto_decrypt_input (C) >= 0);
+          if (c->type->crypto_decrypt_input (C) < 0) {
+            vkprintf (1, "crypto_decrypt_input failed during handshake (fd=%d)\n", c->fd);
+            fail_connection (C, -1);
+            return -1;
+          }
 
           int target = *(short *)(random_header + 60);
           D->extra_int4 = target;
