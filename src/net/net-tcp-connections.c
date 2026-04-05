@@ -206,7 +206,12 @@ int cpu_tcp_aes_crypto_encrypt_output (connection_job_t C) /* {{{ */ {
   int l = out->total_bytes;
   l &= ~15;
   if (l) {
-    assert (rwm_encrypt_decrypt_to (&c->out, &c->out_p, l, T->write_aeskey, 16) == l);
+    int r = rwm_encrypt_decrypt_to (&c->out, &c->out_p, l, T->write_aeskey, 16);
+    if (r != l) {
+      vkprintf (1, "buffer allocation failed in AES encrypt output (fd=%d)\n", c->fd);
+      fail_connection (C, -1);
+      return -1;
+    }
   }
 
   return (-out->total_bytes) & 15;
@@ -223,7 +228,12 @@ int cpu_tcp_aes_crypto_decrypt_input (connection_job_t C) /* {{{ */ {
   int l = in->total_bytes;
   l &= ~15;
   if (l) {
-    assert (rwm_encrypt_decrypt_to (&c->in_u, &c->in, l, T->read_aeskey, 16) == l);
+    int r = rwm_encrypt_decrypt_to (&c->in_u, &c->in, l, T->read_aeskey, 16);
+    if (r != l) {
+      vkprintf (1, "buffer allocation failed in AES decrypt input (fd=%d)\n", c->fd);
+      fail_connection (C, -1);
+      return -1;
+    }
   }
 
   return (-in->total_bytes) & 15;
@@ -258,7 +268,12 @@ int cpu_tcp_aes_crypto_ctr128_encrypt_output (connection_job_t C) /* {{{ */ {
       vkprintf (2, "Send TLS-packet of length %d\n", len);
     }
 
-    assert (rwm_encrypt_decrypt_to (&c->out, &c->out_p, len, T->write_aeskey, 1) == len);
+    int r = rwm_encrypt_decrypt_to (&c->out, &c->out_p, len, T->write_aeskey, 1);
+    if (r != len) {
+      vkprintf (1, "buffer allocation failed in CTR128 encrypt output (fd=%d)\n", c->fd);
+      fail_connection (C, -1);
+      return -1;
+    }
   }
 
   return 0;
@@ -305,7 +320,12 @@ int cpu_tcp_aes_crypto_ctr128_decrypt_input (connection_job_t C) /* {{{ */ {
       c->left_tls_packet_length -= len;
     }
     vkprintf (2, "Read %d bytes out of %d available\n", len, c->in_u.total_bytes);
-    assert (rwm_encrypt_decrypt_to (&c->in_u, &c->in, len, T->read_aeskey, 1) == len);
+    int r = rwm_encrypt_decrypt_to (&c->in_u, &c->in, len, T->read_aeskey, 1);
+    if (r != len) {
+      vkprintf (1, "buffer allocation failed in CTR128 decrypt input (fd=%d)\n", c->fd);
+      fail_connection (C, -1);
+      return -1;
+    }
   }
 
   return 0;

@@ -25,6 +25,7 @@
 #define        _FILE_OFFSET_BITS        64
 
 #include <assert.h>
+#include <sched.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -373,8 +374,10 @@ struct msg_buffer *alloc_msg_buffer_internal (struct msg_buffer *neighbor, struc
   assert (magic == MSG_CHUNK_HEAD_MAGIC || magic == MSG_CHUNK_HEAD_LOCKED_MAGIC);
   struct msg_buffers_chunk *C;
   int found = 0;
+  int retries = 3;
   /* Reclaimed chunks can disappear at unlock time, so alloc always starts from the head list. */
 
+retry:
   lock_chunk_head (CH);
   struct msg_buffers_chunk *CF = CH->ch_next;
   C = CF;
@@ -392,7 +395,11 @@ struct msg_buffer *alloc_msg_buffer_internal (struct msg_buffer *neighbor, struc
       continue;
     }
     if (!C->free_cnt[1]) {
-      unlock_chunk (C);
+      /* Simple unlock: do NOT call unlock_chunk() here because we are
+         holding the head lock and unlock_chunk -> try_reclaim would
+         attempt to re-acquire it, causing a deadlock.
+         The free_block_queue was already drained by try_lock_chunk(). */
+      C->magic = MSG_CHUNK_USED_MAGIC;
       C = C->ch_next;
       continue;
     }
@@ -404,6 +411,13 @@ struct msg_buffer *alloc_msg_buffer_internal (struct msg_buffer *neighbor, struc
   if (!found) {
     C = alloc_new_msg_buffers_chunk (CH);
     if (!C) {
+      if (--retries > 0) {
+        /* Contention: other threads hold chunk locks or chunks were just
+           reclaimed.  Yield and retry — the locks are short-lived. */
+        sched_yield ();
+        found = 0;
+        goto retry;
+      }
       return 0;
     }
   }

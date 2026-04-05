@@ -155,7 +155,12 @@ int cpu_tcp_aes_crypto_ctr128_encrypt_output_drs (connection_job_t C) /* {{{ */ 
       drs->last_record_time = precise_now;
     }
 
-    assert (rwm_encrypt_decrypt_to (&c->out, &c->out_p, len, T->write_aeskey, 1) == len);
+    int r = rwm_encrypt_decrypt_to (&c->out, &c->out_p, len, T->write_aeskey, 1);
+    if (r != len) {
+      vkprintf (1, "buffer allocation failed in DRS encrypt output (fd=%d)\n", c->fd);
+      fail_connection (C, -1);
+      return -1;
+    }
 
     /* Inter-record delay: skip during bulk transfers and sustained transfers
        (phase 3 = max-size records = no real server adds delays here).
