@@ -360,6 +360,34 @@ def _check_proxy_stats(stats_port):
     retries = stats.get("direct_dc_retries", 0)
     details["dc_retries"] = retries
 
+    # Verify all connections were fully freed (fd closed).
+    # total_allocated_connections is only decremented in
+    # cpu_server_free_connection() which requires JS_FINISH — a leaked
+    # job reference prevents this, leaving sockets in CLOSE_WAIT (#48).
+    allocated = stats.get("total_allocated_connections", 0)
+    details["allocated_connections"] = allocated
+    if allocated > 0:
+        # Allow a brief window for async cleanup
+        for _ in range(4):
+            time.sleep(0.5)
+            try:
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    text = resp.read().decode()
+                for line in text.splitlines():
+                    parts = line.split("\t", 1)
+                    if len(parts) == 2 and parts[0] == "total_allocated_connections":
+                        allocated = int(parts[1])
+                        break
+            except Exception:
+                break
+            if allocated == 0:
+                break
+        details["allocated_connections"] = allocated
+        if allocated > 0:
+            print(f"  stats: FAIL — total_allocated_connections={allocated} "
+                  f"(expected 0, connection leak / CLOSE_WAIT)")
+            ok = False
+
     if ok:
         print(f"  stats: OK — created={created}, active={active}, "
               f"failed={failed}, dc_closed={dc_closed}, retries={retries}")

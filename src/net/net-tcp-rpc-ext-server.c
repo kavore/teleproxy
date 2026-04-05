@@ -845,24 +845,22 @@ static job_t direct_try_dc_addrs (connection_job_t C, const struct dc_entry *dc,
       continue;
     }
 
-    job_incref (C);
     job_t EJ;
     if (socks5_config.enabled) {
       /* alloc_new_connection records the SOCKS5 server as the remote addr,
          which is fine — the DC addr is looked up from extra_int4 + extra_int2 */
-      EJ = alloc_new_connection (cfd, NULL, NULL, ct_outbound, &ct_direct_dc, C,
+      EJ = alloc_new_connection (cfd, NULL, NULL, ct_outbound, &ct_direct_dc, NULL,
                                   ntohl (socks5_config.addr), NULL, socks5_config.port);
     } else if (use_ipv6) {
-      EJ = alloc_new_connection (cfd, NULL, NULL, ct_outbound, &ct_direct_dc, C,
+      EJ = alloc_new_connection (cfd, NULL, NULL, ct_outbound, &ct_direct_dc, NULL,
                                   0, (unsigned char *)addr->ipv6, addr->port);
     } else {
-      EJ = alloc_new_connection (cfd, NULL, NULL, ct_outbound, &ct_direct_dc, C,
+      EJ = alloc_new_connection (cfd, NULL, NULL, ct_outbound, &ct_direct_dc, NULL,
                                   ntohl (addr->ipv4), NULL, addr->port);
     }
     if (!EJ) {
       vkprintf (1, "direct mode: DC %d addr %d/%d alloc_new_connection failed\n",
                 target_dc, i + 1, dc->addr_count);
-      job_decref_f (C);
       continue;
     }
     if (socks5_config.enabled) {
