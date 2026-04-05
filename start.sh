@@ -96,6 +96,7 @@ if [ "$#" -eq 0 ]; then
     echo "No SECRET provided, generating one..."
     _gen=$(./teleproxy generate-secret 2>/dev/null)
     set -- "$_gen"
+    SECRET="$_gen"
     echo "Generated secret: $_gen"
 fi
 

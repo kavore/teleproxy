@@ -93,6 +93,9 @@ jobs:
     - name: Run Bind Address Tests
       run: make test-bind-address
 
+    - name: Run Auto-Secret Test
+      run: make test-autosecret
+
     - name: Run Stats Port Healthcheck Test
       run: make test-stats-port
 

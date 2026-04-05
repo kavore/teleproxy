@@ -399,6 +399,12 @@ test-link-ip:
 		docker compose -f tests/docker-compose.link-ip-test.yml down; exit 1)
 	docker compose -f tests/docker-compose.link-ip-test.yml down
 
+test-autosecret:
+	timeout 120s docker compose -f tests/docker-compose.autosecret-test.yml up --build --exit-code-from tester || \
+		(echo "Auto-secret test failed"; \
+		docker compose -f tests/docker-compose.autosecret-test.yml down; exit 1)
+	docker compose -f tests/docker-compose.autosecret-test.yml down
+
 test-stats-port:
 	@export TELEPROXY_SECRET=$$(head -c 16 /dev/urandom | xxd -ps) && \
 	echo "Testing custom STATS_PORT healthcheck..." && \
