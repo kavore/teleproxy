@@ -15,6 +15,7 @@
 
 #include "common/common-stats.h"
 #include "net/net-connections.h"
+#include "net/net-tcp-rpc-ext-server.h"
 
 #define MAX_WORKERS	256
 
@@ -69,6 +70,12 @@ struct worker_stats {
   long long per_secret_rejected_expired[16];
   long long per_secret_unique_ips[16];
   long long per_secret_rate_limited[16];
+
+  /* Per-IP top-N snapshot (issue #46).  Populated each refresh from the
+     worker-local ip_volume table.  Master merges across workers in the
+     Prometheus renderer.  Empty when top_ips_per_secret is 0. */
+  struct worker_top_ip top_ips[16][WORKER_TOP_IPS_MAX];
+  int top_ips_count[16];
 };
 
 extern struct worker_stats *WStats, SumStats;

@@ -55,6 +55,27 @@ int tcp_rpcs_reload_ext_secrets (const unsigned char secrets[][16],
 
 void tcp_rpcs_ip_track_disconnect (int secret_id, unsigned ip, const unsigned char *ipv6);
 
+/* Per-IP volume tracking (issue #46).  Sidecar table populated only when
+   top_ips_per_secret > 0.  See net-tcp-rpc-ext-server.c for details. */
+#define WORKER_TOP_IPS_MAX 32
+
+struct worker_top_ip {
+  unsigned ip;                /* IPv4 host order; 0 means IPv6 entry */
+  unsigned char ipv6[16];     /* IPv6 (zero if IPv4) */
+  int connections;
+  long long bytes_in;
+  long long bytes_out;
+};
+
+void tcp_rpcs_set_top_ips_per_secret (int n);
+int  tcp_rpcs_get_top_ips_per_secret (void);
+void tcp_rpcs_account_connect (int secret_id, unsigned ip, const unsigned char *ipv6);
+void tcp_rpcs_account_disconnect (int secret_id, unsigned ip, const unsigned char *ipv6);
+void tcp_rpcs_account_bytes (int secret_id, unsigned ip, const unsigned char *ipv6,
+                             long long bytes, int direction);
+void tcp_rpcs_snapshot_top_ips (int secret_id, struct worker_top_ip *out,
+                                int *out_count, int max);
+
 void tcp_rpc_add_proxy_domain (const char *domain);
 
 void tcp_rpc_init_proxy_domains();

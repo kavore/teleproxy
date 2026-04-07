@@ -6,12 +6,13 @@ description: "Release history for Teleproxy. Version details, new features, bug 
 
 ## 4.9.0
 
-PROXY protocol v1/v2 listener support ([#50](https://github.com/teleproxy/teleproxy/issues/50)).
+PROXY protocol v1/v2 listener support ([#50](https://github.com/teleproxy/teleproxy/issues/50)) and per-IP top-N Prometheus metrics ([#46](https://github.com/teleproxy/teleproxy/issues/46)).
 
 - **PROXY protocol** — accept HAProxy PROXY protocol v1 (text) and v2 (binary) headers on client listeners. Required when running behind a load balancer (HAProxy, nginx, AWS NLB) that injects client IP. Enable with `--proxy-protocol` (CLI), `proxy_protocol = true` (TOML), or `PROXY_PROTOCOL=true` (Docker).
 - Auto-detects v1 and v2 headers, extracts real client IP, re-checks IP ACLs against the real address.
 - v2 LOCAL command accepted for load balancer health check probes.
 - New Prometheus metrics: `teleproxy_proxy_protocol_connections_total`, `teleproxy_proxy_protocol_errors_total`.
+- **Per-IP top-N metrics** — opt-in `top_ips_per_secret = N` (TOML) or `TOP_IPS_PER_SECRET=N` (Docker) exposes the top-N heaviest client IPs per secret in `/metrics`. Three new families: `teleproxy_secret_ip_connections`, `teleproxy_secret_ip_bytes_received_total`, `teleproxy_secret_ip_bytes_sent_total`. Sorted by total bytes; cap at 32 per secret to keep Prometheus cardinality bounded. Default 0 (disabled, zero overhead). Useful for diagnosing the "proxy works for 5 minutes then stops" complaint pattern alongside the Grafana dashboard.
 - Fix auto-generated secret not written to TOML config — `start.sh` now correctly stores the generated secret in the TOML config.
 - Documentation: complete SEO overhaul with per-page meta descriptions, OpenGraph tags, JSON-LD structured data, and robots.txt.
 - Translations: Russian documentation now at 100% coverage, Farsi and Vietnamese expanded to 38%.

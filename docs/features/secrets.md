@@ -222,6 +222,30 @@ Metrics:
 - **Stats:** `secret_temp_expires 1751327999`, `secret_temp_rejected_expired 12`
 - **Prometheus:** `teleproxy_secret_expires_timestamp{secret="temp"} 1751327999`
 
+## Per-IP Top-N Metrics
+
+Surface the heaviest client IPs per secret in `/metrics` to diagnose rogue clients. Disabled by default — opt in with a top-level config knob, not a per-secret one (cardinality is an operator concern).
+
+TOML config:
+
+```toml
+top_ips_per_secret = 10  # 0 disables; max 32
+```
+
+Docker:
+
+```bash
+TOP_IPS_PER_SECRET=10
+```
+
+When enabled, three new Prometheus metric families are emitted, each labelled `{secret="...", ip="..."}` for the top-N heaviest IPs per secret (sorted by total bytes):
+
+- `teleproxy_secret_ip_connections` — current active connections from this IP (gauge)
+- `teleproxy_secret_ip_bytes_received_total` — bytes received from this IP (counter)
+- `teleproxy_secret_ip_bytes_sent_total` — bytes sent to this IP (counter)
+
+Cardinality is bounded at `top_ips_per_secret × secret_count` labelled samples per family. Counters reset when an IP entry is recycled — Prometheus `rate()` handles this correctly.
+
 ## TOML Config Example
 
 All per-secret features combined:

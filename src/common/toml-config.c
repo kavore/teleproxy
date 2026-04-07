@@ -400,6 +400,12 @@ int toml_config_load (const char *path, struct toml_config *cfg,
     toml_free (res);
     return -1;
   }
+  cfg->top_ips_per_secret = get_optional_int (top, "top_ips_per_secret", 0);
+  if (cfg->top_ips_per_secret < 0) {
+    snprintf (errbuf, errlen, "top_ips_per_secret must be non-negative");
+    toml_free (res);
+    return -1;
+  }
 
   /* IP filtering */
   get_optional_string (top, "ip_blocklist", cfg->ip_blocklist, sizeof (cfg->ip_blocklist));

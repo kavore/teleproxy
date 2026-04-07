@@ -57,6 +57,10 @@ struct toml_config {
   char stats_allow_nets[TOML_CONFIG_MAX_STATS_NETS][64];
   int stats_allow_net_count;
 
+  /* Per-IP top-N metrics in /metrics output (0 = disabled, default).
+     Operator-side cardinality cap; clamped to WORKER_TOP_IPS_MAX. */
+  int top_ips_per_secret;
+
   /* IP filtering (reloadable — paths only; actual reload via ip_acl_reload) */
   char ip_blocklist[256];
   char ip_allowlist[256];

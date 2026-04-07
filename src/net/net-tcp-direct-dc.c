@@ -297,6 +297,7 @@ static int tcp_direct_client_parse_execute (connection_job_t C) {
   long long relay_bytes = c->in.total_bytes;
   if (sid > 0 && sid <= 16 && relay_bytes > 0) {
     per_secret_bytes_received[sid - 1] += relay_bytes;
+    tcp_rpcs_account_bytes (sid - 1, c->remote_ip, c->remote_ipv6, relay_bytes, 0);
     if (secret_over_quota (sid - 1)) {
       per_secret_rejected_quota[sid - 1]++;
       vkprintf (1, "direct client: secret #%d quota exhausted, closing from %s:%d\n", sid - 1, show_remote_ip (C), c->remote_port);
@@ -352,6 +353,8 @@ static int tcp_direct_dc_parse_execute (connection_job_t C) {
     if (sid > 0 && sid <= 16) {
       relay_bytes = c->in.total_bytes;
       per_secret_bytes_sent[sid - 1] += relay_bytes;
+      tcp_rpcs_account_bytes (sid - 1, CONN_INFO(client)->remote_ip,
+                              CONN_INFO(client)->remote_ipv6, relay_bytes, 1);
       if (secret_over_quota (sid - 1)) {
         per_secret_rejected_quota[sid - 1]++;
         vkprintf (1, "direct DC: secret #%d quota exhausted, closing\n", sid - 1);
@@ -406,6 +409,7 @@ static int tcp_direct_close (connection_job_t C, int who) {
     if (sid > 0 && sid <= 16) {
       per_secret_connections[sid - 1]--;
       ip_track_disconnect_impl (sid - 1, c->remote_ip, c->remote_ipv6);
+      tcp_rpcs_account_disconnect (sid - 1, c->remote_ip, c->remote_ipv6);
     }
   }
   if (is_dc && who != 0) {

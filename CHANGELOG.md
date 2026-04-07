@@ -11,6 +11,13 @@ PROXY protocol v1/v2 listener support.
 - New stats: `proxy_protocol_enabled`, `proxy_protocol_connections`, `proxy_protocol_errors`
 - Prometheus metrics: `teleproxy_proxy_protocol_connections_total`, `teleproxy_proxy_protocol_errors_total`
 
+Per-IP top-N Prometheus metrics (#46).
+
+- New `top_ips_per_secret` TOML config knob (`TOP_IPS_PER_SECRET` Docker env). Default 0 (disabled, zero overhead).
+- When set, exposes `teleproxy_secret_ip_connections`, `teleproxy_secret_ip_bytes_received_total`, and `teleproxy_secret_ip_bytes_sent_total` for the top-N client IPs per secret, sorted by total bytes.
+- Cardinality cap is enforced operator-side: `top_ips_per_secret * secret_count` labelled samples maximum. Capped at 32 per secret.
+- Useful for diagnosing the "proxy works for 5 minutes then stops" complaint pattern when paired with the Grafana dashboard.
+
 Other changes:
 
 - Fix auto-generated secret not written to TOML config

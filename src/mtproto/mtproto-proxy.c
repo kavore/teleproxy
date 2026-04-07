@@ -1705,6 +1705,10 @@ void mtfront_pre_init (void) {
     secret_count = tcp_rpcs_get_ext_secret_count ();
   }
 
+  if (toml_config_path) {
+    tcp_rpcs_set_top_ips_per_secret (toml_cfg.top_ips_per_secret);
+  }
+
   if (domain_count) {
     tcp_rpc_init_proxy_domains();
     drs_delays_enabled = 1;

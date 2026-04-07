@@ -211,6 +211,10 @@ struct tracked_ip {
 static struct tracked_ip per_secret_ips[16][SECRET_MAX_TRACKED_IPS];
 static int per_secret_unique_ip_count[16];
 
+/* Per-IP volume tracking for top-N metrics lives in net-tcp-rpc-ext-top-ips.c
+   (issue #46).  Kept separate to preserve responsibility boundaries and to
+   stay under the per-file LLM-context line budget. */
+
 void tcp_rpcs_set_ext_secret (unsigned char secret[16], const char *label,
                               int limit, long long quota, long long rate_limit,
                               int max_ips, int64_t expires) {
@@ -1820,6 +1824,7 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
             per_secret_connections[_sid - 1]++;
             per_secret_connections_created[_sid - 1]++;
             ip_track_connect (_sid - 1, c->remote_ip, c->remote_ipv6);
+            tcp_rpcs_account_connect (_sid - 1, c->remote_ip, c->remote_ipv6);
           }
         }
 

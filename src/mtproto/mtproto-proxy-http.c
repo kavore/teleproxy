@@ -137,6 +137,7 @@ int mtproto_ext_rpc_close (connection_job_t C, int who) {
   if (sid > 0 && sid <= 16) {
     per_secret_connections[sid - 1]--;
     tcp_rpcs_ip_track_disconnect (sid - 1, CONN_INFO(C)->remote_ip, CONN_INFO(C)->remote_ipv6);
+    tcp_rpcs_account_disconnect (sid - 1, CONN_INFO(C)->remote_ip, CONN_INFO(C)->remote_ipv6);
   }
   struct ext_connection *Ex = get_ext_connection_by_in_fd (CONN_INFO(C)->fd);
   if (Ex) {

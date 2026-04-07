@@ -15,6 +15,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <arpa/inet.h>
 
 #include "common/common-stats.h"
 #include "net/net-events.h"
@@ -62,6 +63,70 @@ extern long long connections_failed_lru, connections_failed_flood;
 struct worker_stats *WStats, SumStats;
 int worker_id, workers, slave_mode, parent_pid;
 int pids[MAX_WORKERS];
+
+/* Cross-worker merge buffer for per-IP top-N metrics (issue #46).
+   Populated by compute_stats_sum() in multi-worker mode and by
+   prepare_master_top_ips() directly in single-process mode.  Same IP from
+   different workers (e.g. after reconnect) is summed.  Size cap is soft —
+   if more distinct IPs arrive than fit, the smallest bytes_total entry is
+   evicted to make room. */
+#define MASTER_TOP_IPS_CAP 128
+static struct worker_top_ip MasterTopIps[16][MASTER_TOP_IPS_CAP];
+static int MasterTopIpsCount[16];
+
+static void master_top_ips_reset (void) {
+  memset (MasterTopIps, 0, sizeof (MasterTopIps));
+  memset (MasterTopIpsCount, 0, sizeof (MasterTopIpsCount));
+}
+
+static int worker_top_ip_match (const struct worker_top_ip *a,
+                                const struct worker_top_ip *b) {
+  if (a->ip != 0 || b->ip != 0) {
+    return a->ip == b->ip;
+  }
+  return memcmp (a->ipv6, b->ipv6, 16) == 0;
+}
+
+static void merge_one_top_ip (int sid, const struct worker_top_ip *src) {
+  /* Merge by (ip, ipv6) key into MasterTopIps[sid].  Sum on collision. */
+  int *count = &MasterTopIpsCount[sid];
+  for (int i = 0; i < *count; i++) {
+    if (worker_top_ip_match (&MasterTopIps[sid][i], src)) {
+      MasterTopIps[sid][i].connections += src->connections;
+      MasterTopIps[sid][i].bytes_in    += src->bytes_in;
+      MasterTopIps[sid][i].bytes_out   += src->bytes_out;
+      return;
+    }
+  }
+  if (*count < MASTER_TOP_IPS_CAP) {
+    MasterTopIps[sid][*count] = *src;
+    (*count)++;
+    return;
+  }
+  /* Buffer full: evict the smallest-volume entry if it's smaller than src. */
+  int victim = -1;
+  long long victim_total = src->bytes_in + src->bytes_out;
+  for (int i = 0; i < MASTER_TOP_IPS_CAP; i++) {
+    long long t = MasterTopIps[sid][i].bytes_in + MasterTopIps[sid][i].bytes_out;
+    if (t < victim_total) {
+      victim = i;
+      victim_total = t;
+    }
+  }
+  if (victim >= 0) {
+    MasterTopIps[sid][victim] = *src;
+  }
+}
+
+static void merge_worker_top_ips (const struct worker_stats *W) {
+  for (int sid = 0; sid < 16; sid++) {
+    int n = W->top_ips_count[sid];
+    if (n > WORKER_TOP_IPS_MAX) { n = WORKER_TOP_IPS_MAX; }
+    for (int i = 0; i < n; i++) {
+      merge_one_top_ip (sid, &W->top_ips[sid][i]);
+    }
+  }
+}
 
 long long get_queries;
 extern long long http_queries;
@@ -138,6 +203,7 @@ static void update_local_stats_copy (struct worker_stats *S) {
     UPD (per_secret_rejected_expired[_i]);
     UPD (per_secret_unique_ips[_i]);
     UPD (per_secret_rate_limited[_i]);
+    tcp_rpcs_snapshot_top_ips (_i, S->top_ips[_i], &S->top_ips_count[_i], WORKER_TOP_IPS_MAX);
   }}
 #undef UPD
   __sync_synchronize();
@@ -253,6 +319,7 @@ void compute_stats_sum (void) {
     return;
   }
   memset (&SumStats, 0, sizeof (SumStats));
+  master_top_ips_reset ();
   int i;
   for (i = 0; i < workers; i++) {
     static struct worker_stats W;
@@ -273,7 +340,36 @@ void compute_stats_sum (void) {
       barrier ();
     } while (s_cnt != F->cnt);
     add_stats (&W);
+    merge_worker_top_ips (&W);
   }
+}
+
+/* Snapshot the worker-local ip_volume table directly into MasterTopIps.
+   Used in single-process mode where compute_stats_sum is a no-op. */
+static void prepare_master_top_ips_local (void) {
+  master_top_ips_reset ();
+  if (tcp_rpcs_get_top_ips_per_secret () <= 0) {
+    return;
+  }
+  static struct worker_top_ip buf[WORKER_TOP_IPS_MAX];
+  for (int sid = 0; sid < 16; sid++) {
+    int count = 0;
+    tcp_rpcs_snapshot_top_ips (sid, buf, &count, WORKER_TOP_IPS_MAX);
+    for (int i = 0; i < count; i++) {
+      merge_one_top_ip (sid, &buf[i]);
+    }
+  }
+}
+
+/* Comparator for sorting MasterTopIps[sid] by bytes_total descending. */
+static int top_ip_cmp_desc (const void *a, const void *b) {
+  const struct worker_top_ip *x = a;
+  const struct worker_top_ip *y = b;
+  long long tx = x->bytes_in + x->bytes_out;
+  long long ty = y->bytes_in + y->bytes_out;
+  if (tx > ty) { return -1; }
+  if (tx < ty) { return  1; }
+  return 0;
 }
 
 /*
@@ -520,6 +616,9 @@ void mtfront_prepare_prometheus_stats (stats_buffer_t *sb) {
   struct buffers_stat bufs;
   int uptime = now - start_time;
   compute_stats_sum ();
+  if (!workers) {
+    prepare_master_top_ips_local ();
+  }
   fetch_connections_stat (&conn);
   fetch_buffers_stat (&bufs);
 
@@ -837,6 +936,75 @@ void mtfront_prepare_prometheus_stats (stats_buffer_t *sb) {
       for (_i = 0; _i < _sc; _i++) {
         sb_printf (sb, "teleproxy_secret_rate_limited_total{secret=\"%s\"} %lld\n",
 	         tcp_rpcs_get_ext_secret_label (_i), S(per_secret_rate_limited[_i]));
+      }
+
+      /* Per-IP top-N metrics (issue #46).  Emitted only when the operator
+         opts in via top_ips_per_secret > 0.  Sorted by bytes_in+bytes_out
+         descending; ties broken by selection-sort order (stable enough). */
+      int _top_n = tcp_rpcs_get_top_ips_per_secret ();
+      if (_top_n > 0) {
+        if (_top_n > MASTER_TOP_IPS_CAP) { _top_n = MASTER_TOP_IPS_CAP; }
+        sb_printf (sb,
+	       "# HELP teleproxy_secret_ip_connections Active connections per client IP (top N per secret by traffic).\n"
+	       "# TYPE teleproxy_secret_ip_connections gauge\n");
+        for (_i = 0; _i < _sc; _i++) {
+          int n = MasterTopIpsCount[_i];
+          if (n <= 0) { continue; }
+          qsort (MasterTopIps[_i], n, sizeof (MasterTopIps[_i][0]), top_ip_cmp_desc);
+          if (n > _top_n) { n = _top_n; }
+          for (int k = 0; k < n; k++) {
+            char ipbuf[INET6_ADDRSTRLEN];
+            const struct worker_top_ip *e = &MasterTopIps[_i][k];
+            if (e->ip != 0) {
+              unsigned ip_be = htonl (e->ip);
+              inet_ntop (AF_INET, &ip_be, ipbuf, sizeof (ipbuf));
+            } else {
+              inet_ntop (AF_INET6, e->ipv6, ipbuf, sizeof (ipbuf));
+            }
+            sb_printf (sb, "teleproxy_secret_ip_connections{secret=\"%s\",ip=\"%s\"} %d\n",
+                       tcp_rpcs_get_ext_secret_label (_i), ipbuf, e->connections);
+          }
+        }
+        sb_printf (sb,
+	       "# HELP teleproxy_secret_ip_bytes_received_total Bytes received from client IP (top N per secret by traffic).\n"
+	       "# TYPE teleproxy_secret_ip_bytes_received_total counter\n");
+        for (_i = 0; _i < _sc; _i++) {
+          int n = MasterTopIpsCount[_i];
+          if (n <= 0) { continue; }
+          if (n > _top_n) { n = _top_n; }
+          for (int k = 0; k < n; k++) {
+            char ipbuf[INET6_ADDRSTRLEN];
+            const struct worker_top_ip *e = &MasterTopIps[_i][k];
+            if (e->ip != 0) {
+              unsigned ip_be = htonl (e->ip);
+              inet_ntop (AF_INET, &ip_be, ipbuf, sizeof (ipbuf));
+            } else {
+              inet_ntop (AF_INET6, e->ipv6, ipbuf, sizeof (ipbuf));
+            }
+            sb_printf (sb, "teleproxy_secret_ip_bytes_received_total{secret=\"%s\",ip=\"%s\"} %lld\n",
+                       tcp_rpcs_get_ext_secret_label (_i), ipbuf, e->bytes_in);
+          }
+        }
+        sb_printf (sb,
+	       "# HELP teleproxy_secret_ip_bytes_sent_total Bytes sent to client IP (top N per secret by traffic).\n"
+	       "# TYPE teleproxy_secret_ip_bytes_sent_total counter\n");
+        for (_i = 0; _i < _sc; _i++) {
+          int n = MasterTopIpsCount[_i];
+          if (n <= 0) { continue; }
+          if (n > _top_n) { n = _top_n; }
+          for (int k = 0; k < n; k++) {
+            char ipbuf[INET6_ADDRSTRLEN];
+            const struct worker_top_ip *e = &MasterTopIps[_i][k];
+            if (e->ip != 0) {
+              unsigned ip_be = htonl (e->ip);
+              inet_ntop (AF_INET, &ip_be, ipbuf, sizeof (ipbuf));
+            } else {
+              inet_ntop (AF_INET6, e->ipv6, ipbuf, sizeof (ipbuf));
+            }
+            sb_printf (sb, "teleproxy_secret_ip_bytes_sent_total{secret=\"%s\",ip=\"%s\"} %lld\n",
+                       tcp_rpcs_get_ext_secret_label (_i), ipbuf, e->bytes_out);
+          }
+        }
       }
     }
   }

@@ -78,6 +78,9 @@ jobs:
     - name: Run Rate Limit Config Tests
       run: make test-rate-limit
 
+    - name: Run Per-IP Metrics Tests
+      run: make test-top-ips
+
     - name: Run Config Reload Tests
       run: make test-config-reload
 

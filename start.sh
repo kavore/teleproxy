@@ -216,6 +216,10 @@ TOML_CONFIG="data/config.toml"
         echo "dc_probe_interval = $DC_PROBE_INTERVAL"
     fi
 
+    if [ -n "$TOP_IPS_PER_SECRET" ]; then
+        echo "top_ips_per_secret = $TOP_IPS_PER_SECRET"
+    fi
+
     if [ -n "$DC_OVERRIDE" ]; then
         _save_ifs="$IFS"
         IFS=','
