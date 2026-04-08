@@ -74,7 +74,6 @@ int cpu_tcp_server_writer (connection_job_t C) /* {{{ */ {
 
   if (c->type->crypto_encrypt_output && c->crypto) {
     if (c->type->crypto_encrypt_output (C) < 0) {
-      rwm_free (raw);
       free (raw);
       return -1;
     }

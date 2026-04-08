@@ -193,7 +193,10 @@ struct msg_part *rwm_lock_first_part (struct raw_message *raw) /* {{{ */ {
 int rwm_free (struct raw_message *raw) /* {{{ */ {
   struct msg_part *mp = raw->first;
   int t = raw->magic;
-  assert (raw->magic == RM_INIT_MAGIC || raw->magic == RM_TMP_MAGIC);
+  if (t != RM_INIT_MAGIC && t != RM_TMP_MAGIC) {
+    vkprintf (0, "rwm_free: invalid magic 0x%08x, skipping free to avoid corruption\n", (unsigned)t);
+    return -1;
+  }
   MODULE_STAT->rwm_total_msgs --;
   memset (raw, 0, sizeof (*raw));
   return t == RM_TMP_MAGIC ? 0 : msg_part_decref (mp);
@@ -201,8 +204,14 @@ int rwm_free (struct raw_message *raw) /* {{{ */ {
 /* }}} */
 
 int rwm_compare (struct raw_message *l, struct raw_message *r) /* {{{ */ {
-  assert (l->magic == RM_INIT_MAGIC || l->magic == RM_TMP_MAGIC);
-  assert (r->magic == RM_INIT_MAGIC || r->magic == RM_TMP_MAGIC);
+  if (l && l->magic != RM_INIT_MAGIC && l->magic != RM_TMP_MAGIC) {
+    vkprintf (0, "rwm_compare: left message has invalid magic 0x%08x\n", (unsigned)l->magic);
+    return -2;
+  }
+  if (r && r->magic != RM_INIT_MAGIC && r->magic != RM_TMP_MAGIC) {
+    vkprintf (0, "rwm_compare: right message has invalid magic 0x%08x\n", (unsigned)r->magic);
+    return -2;
+  }
   if (l && !l->total_bytes) { l = 0; }
   if (r && !r->total_bytes) { r = 0; }
   if (!l && !r) { return 0; }
@@ -516,7 +525,10 @@ int rwm_push_data_front (struct raw_message *raw, const void *data, int alloc_by
   }
   while (alloc_bytes) {
     struct msg_buffer *X = alloc_msg_buffer (raw->first ? raw->first->part : 0, alloc_bytes >= MSG_SMALL_BUFFER ? MSG_STD_BUFFER : MSG_SMALL_BUFFER);
-    assert (X);
+    if (!X) {
+      vkprintf (0, "rwm_push_data_front: failed to allocate msg buffer\n");
+      break;
+    }
     int size = X->chunk->buffer_size;
     mp = new_msg_part (raw->first, X);
     mp->next = raw->first;
@@ -542,13 +554,13 @@ int rwm_push_data_front (struct raw_message *raw, const void *data, int alloc_by
         raw->last = mp;
         raw->last_offset = mp->data_end;
       }
-      
+
       if (locked) { locked->magic = MSG_PART_MAGIC; }
       return r;
     }
   }
-  assert (0);
-  return r;
+  if (locked) { locked->magic = MSG_PART_MAGIC; }
+  return r - alloc_bytes;
 }
 /* }}} */
 
@@ -593,7 +605,11 @@ void *rwm_prepend_alloc (struct raw_message *raw, int alloc_bytes) /* {{{ */ {
 
   assert (raw->first_offset == raw->first->offset);
   struct msg_buffer *X = alloc_msg_buffer (raw->first ? raw->first->part : 0, alloc_bytes);
-  assert (X);  
+  if (!X) {
+    vkprintf (0, "rwm_prepend_alloc: failed to allocate msg buffer\n");
+    if (locked) { locked->magic = MSG_PART_MAGIC; }
+    return NULL;
+  }
   int size = X->chunk->buffer_size;
   assert (size >= alloc_bytes);
   struct msg_part *mp = new_msg_part (raw->first, X);
@@ -635,10 +651,14 @@ void *rwm_postpone_alloc (struct raw_message *raw, int alloc_bytes) /* {{{ */ {
     return mp->part->data + mp->data_end - alloc_bytes;
   }
   struct msg_buffer *X = alloc_msg_buffer (mp->part, alloc_bytes);
-  assert (X);
+  if (!X) {
+    vkprintf (0, "rwm_postpone_alloc: failed to allocate msg buffer\n");
+    if (locked) { locked->magic = MSG_PART_MAGIC; }
+    return NULL;
+  }
   size = X->chunk->buffer_size;
   assert (size >= alloc_bytes);
-  
+
   mp = new_msg_part (raw->first, X);
   raw->last->next = mp;
   raw->last = mp;
@@ -1374,6 +1394,11 @@ int rwm_encrypt_decrypt_to (struct raw_message *raw, struct raw_message *res, in
       res->last_offset = res->first_offset = mp->offset = mp->data_end = RM_PREPEND_RESERVE;
     }
   }
+  struct msg_part *saved_last = res->last;
+  int saved_last_offset = res->last_offset;
+  int saved_last_data_end = res->last->data_end;
+  int saved_total_bytes = res->total_bytes;
+
   struct rwm_encrypt_decrypt_tmp t;
   t.bp = 0;
   if (res->last->part->refcnt == 1) {
@@ -1386,6 +1411,17 @@ int rwm_encrypt_decrypt_to (struct raw_message *raw, struct raw_message *res, in
   t.left = bytes;
   t.block_size = block_size;
   int r = rwm_process_and_advance (raw, bytes, (void *)rwm_process_encrypt_decrypt, &t);
+  if (r < 0) {
+    /* Roll back res: free any msg_parts appended by the callback */
+    if (saved_last->next) {
+      msg_part_decref (saved_last->next);
+      saved_last->next = NULL;
+    }
+    res->last = saved_last;
+    res->last_offset = saved_last_offset;
+    res->last->data_end = saved_last_data_end;
+    res->total_bytes = saved_total_bytes;
+  }
   if (locked) {
     locked->magic = MSG_PART_MAGIC;
   }
