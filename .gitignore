@@ -1,6 +1,8 @@
 objs
 dep
 .idea
+.worktrees/
+.serena/
 proxy-multi.conf
 proxy-secret
 fuzz/fuzz_tls_server_hello
