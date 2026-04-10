@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/un.h>
 
 #include <openssl/bn.h>
 #include <openssl/crypto.h>
@@ -508,6 +509,7 @@ struct domain_info {
   short server_hello_encrypted_size;
   char use_random_encrypted_size;
   char is_reversed_extension_order;
+  const char *unix_path;    /* NULL for TCP backends, absolute path for AF_UNIX */
   struct domain_info *next;
 };
 
@@ -742,29 +744,34 @@ static unsigned char *create_request (const char *domain) {
 static int update_domain_info (struct domain_info *info) {
   const char *domain = info->domain;
 
-  // Try parsing as a literal IP address first
+  int af = 0;
   struct in_addr addr4;
   struct in6_addr addr6;
-  int af = 0;
-  if (inet_pton (AF_INET, domain, &addr4) == 1) {
-    af = AF_INET;
-    info->target = addr4;
-    memset (info->target_ipv6, 0, sizeof (info->target_ipv6));
-  } else if (inet_pton (AF_INET6, domain, &addr6) == 1) {
-    af = AF_INET6;
-    info->target.s_addr = 0;
-    memcpy (info->target_ipv6, &addr6, sizeof (info->target_ipv6));
-  }
-
   struct hostent *host = NULL;
-  if (!af) {
-    host = kdb_gethostbyname (domain);
-    if (host == NULL || host->h_addr == NULL) {
-      kprintf ("Failed to resolve host %s\n", domain);
-      return 0;
+
+  if (info->unix_path != NULL) {
+    af = AF_UNIX;
+  } else {
+    // Try parsing as a literal IP address first
+    if (inet_pton (AF_INET, domain, &addr4) == 1) {
+      af = AF_INET;
+      info->target = addr4;
+      memset (info->target_ipv6, 0, sizeof (info->target_ipv6));
+    } else if (inet_pton (AF_INET6, domain, &addr6) == 1) {
+      af = AF_INET6;
+      info->target.s_addr = 0;
+      memcpy (info->target_ipv6, &addr6, sizeof (info->target_ipv6));
     }
-    assert (host->h_addrtype == AF_INET || host->h_addrtype == AF_INET6);
-    af = host->h_addrtype;
+
+    if (!af) {
+      host = kdb_gethostbyname (domain);
+      if (host == NULL || host->h_addr == NULL) {
+        kprintf ("Failed to resolve host %s\n", domain);
+        return 0;
+      }
+      assert (host->h_addrtype == AF_INET || host->h_addrtype == AF_INET6);
+      af = host->h_addrtype;
+    }
   }
 
   fd_set read_fd;
@@ -778,7 +785,7 @@ static int update_domain_info (struct domain_info *info) {
   int sockets[TRIES];
   int i;
   for (i = 0; i < TRIES; i++) {
-    sockets[i] = socket (af, SOCK_STREAM, IPPROTO_TCP);
+    sockets[i] = socket (af, SOCK_STREAM, (af == AF_UNIX) ? 0 : IPPROTO_TCP);
     if (sockets[i] < 0) {
       kprintf ("Failed to open socket for %s: %s\n", domain, strerror (errno));
       return 0;
@@ -789,7 +796,14 @@ static int update_domain_info (struct domain_info *info) {
     }
 
     int e_connect;
-    if (af == AF_INET) {
+    if (af == AF_UNIX) {
+      struct sockaddr_un addr;
+      memset (&addr, 0, sizeof (addr));
+      addr.sun_family = AF_UNIX;
+      /* length already validated at parse time */
+      memcpy (addr.sun_path, info->unix_path, strlen (info->unix_path) + 1);
+      e_connect = connect (sockets[i], (struct sockaddr *)&addr, sizeof (addr));
+    } else if (af == AF_INET) {
       if (host) {
         info->target = *((struct in_addr *) host->h_addr);
         memset (info->target_ipv6, 0, sizeof (info->target_ipv6));
@@ -819,7 +833,11 @@ static int update_domain_info (struct domain_info *info) {
     }
 
     if (e_connect == -1 && errno != EINPROGRESS) {
-      kprintf ("Failed to connect to %s: %s\n", domain, strerror (errno));
+      if (af == AF_UNIX) {
+        kprintf ("Failed to connect to %s@unix:%s: %s\n", domain, info->unix_path, strerror (errno));
+      } else {
+        kprintf ("Failed to connect to %s: %s\n", domain, strerror (errno));
+      }
       return 0;
     }
   }
@@ -1065,44 +1083,66 @@ void tcp_rpc_add_proxy_domain (const char *domain) {
   assert (info != NULL);
   info->port = 443;
 
-  const char *host_start = domain;
-  const char *host_end = NULL;
-
-  if (domain[0] == '[') {
-    // [IPv6]:port format
-    host_end = strchr (domain, ']');
-    if (host_end == NULL) {
-      kprintf ("Invalid IPv6 address: %s\n", domain);
+  const char *at_unix = strstr (domain, "@unix:");
+  if (at_unix != NULL && at_unix[6] != '\0') {
+    size_t sni_len = (size_t) (at_unix - domain);
+    if (sni_len == 0) {
+      kprintf ("Invalid domain spec: empty SNI hostname before @unix: in %s\n", domain);
       free (info);
       return;
     }
-    host_start = domain + 1;
-    const char *after_bracket = host_end + 1;
-    if (*after_bracket == ':') {
-      info->port = atoi (after_bracket + 1);
+    const char *path = at_unix + 6;
+    size_t plen = strlen (path);
+    if (plen >= sizeof (((struct sockaddr_un *)0)->sun_path)) {
+      kprintf ("Invalid domain spec: unix socket path too long (%zu bytes, max %zu) in %s\n",
+               plen, sizeof (((struct sockaddr_un *)0)->sun_path) - 1, domain);
+      free (info);
+      return;
     }
-    info->domain = strndup (host_start, host_end - host_start);
+    info->domain = strndup (domain, sni_len);
+    info->unix_path = strdup (path);
+    info->port = 0;
+    kprintf ("Proxy domain: %s@unix:%s\n", info->domain, info->unix_path);
   } else {
-    // Check for host:port — but only if the last colon has digits after it
-    // and there is at most one colon (to avoid matching bare IPv6 like ::1)
-    const char *colon = strrchr (domain, ':');
-    if (colon != NULL && strchr (domain, ':') == colon) {
-      // Exactly one colon — treat as host:port
-      info->port = atoi (colon + 1);
-      info->domain = strndup (domain, colon - domain);
+    const char *host_start = domain;
+    const char *host_end = NULL;
+
+    if (domain[0] == '[') {
+      // [IPv6]:port format
+      host_end = strchr (domain, ']');
+      if (host_end == NULL) {
+        kprintf ("Invalid IPv6 address: %s\n", domain);
+        free (info);
+        return;
+      }
+      host_start = domain + 1;
+      const char *after_bracket = host_end + 1;
+      if (*after_bracket == ':') {
+        info->port = atoi (after_bracket + 1);
+      }
+      info->domain = strndup (host_start, host_end - host_start);
     } else {
-      info->domain = strdup (domain);
+      // Check for host:port — but only if the last colon has digits after it
+      // and there is at most one colon (to avoid matching bare IPv6 like ::1)
+      const char *colon = strrchr (domain, ':');
+      if (colon != NULL && strchr (domain, ':') == colon) {
+        // Exactly one colon — treat as host:port
+        info->port = atoi (colon + 1);
+        info->domain = strndup (domain, colon - domain);
+      } else {
+        info->domain = strdup (domain);
+      }
     }
-  }
 
-  if (info->port <= 0 || info->port > 65535) {
-    kprintf ("Invalid port in domain spec: %s\n", domain);
-    free ((void *)info->domain);
-    free (info);
-    return;
-  }
+    if (info->port <= 0 || info->port > 65535) {
+      kprintf ("Invalid port in domain spec: %s\n", domain);
+      free ((void *)info->domain);
+      free (info);
+      return;
+    }
 
-  kprintf ("Proxy domain: %s:%d\n", info->domain, info->port);
+    kprintf ("Proxy domain: %s:%d\n", info->domain, info->port);
+  }
 
   struct domain_info **bucket = get_domain_info_bucket (info->domain, strlen (info->domain));
   info->next = *bucket;
@@ -1251,6 +1291,37 @@ static int proxy_connection (connection_job_t C, const struct domain_info *info)
   TCP_RPC_DATA(C)->extra_int2 = 0;
 
   assert (check_conn_functions (&ct_proxy_pass, 0) >= 0);
+
+  if (info->unix_path != NULL) {
+    int cfd = client_socket_unix (info->unix_path);
+    if (cfd < 0) {
+      kprintf ("failed to connect to %s@unix:%s: %m\n", info->domain, info->unix_path);
+      fail_connection (C, -27);
+      return 0;
+    }
+
+    c->type->crypto_free (C);
+    job_incref (C);
+    unsigned char zero_ipv6[16] = {};
+    job_t EJ = alloc_new_connection (cfd, NULL, NULL, ct_outbound, &ct_proxy_pass, C,
+                                     0, zero_ipv6, 0);
+
+    if (!EJ) {
+      kprintf ("failed to create proxy pass connection to %s@unix:%s\n",
+               info->domain, info->unix_path);
+      job_decref_f (C);
+      fail_connection (C, -37);
+      return 0;
+    }
+
+    c->type = &ct_proxy_pass;
+    c->extra = job_incref (EJ);
+
+    assert (CONN_INFO(EJ)->io_conn);
+    unlock_job (JOB_REF_PASS (EJ));
+
+    return c->type->parse_execute (C);
+  }
 
   const char zero[16] = {};
   if (info->target.s_addr == 0 && !memcmp (info->target_ipv6, zero, 16)) {

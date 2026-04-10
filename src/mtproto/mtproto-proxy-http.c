@@ -109,7 +109,7 @@ int do_close_in_ext_conn (void *_data, int s_len) {
 
 // NET_CPU context
 int mtproto_http_close (connection_job_t C, int who) {
-  assert ((unsigned) CONN_INFO(C)->fd < MAX_CONNECTIONS);
+  assert ((unsigned) CONN_INFO(C)->fd < (unsigned) max_connection_fd);
   vkprintf (3, "http connection closing (%d) by %d, %d queries pending\n", CONN_INFO(C)->fd, who, CONN_INFO(C)->pending_queries);
   if (CONN_INFO(C)->pending_queries) {
     assert (CONN_INFO(C)->pending_queries == 1);
@@ -121,7 +121,7 @@ int mtproto_http_close (connection_job_t C, int who) {
 }
 
 int mtproto_ext_rpc_ready (connection_job_t C) {
-  assert ((unsigned) CONN_INFO(C)->fd < MAX_CONNECTIONS);
+  assert ((unsigned) CONN_INFO(C)->fd < (unsigned) max_connection_fd);
   vkprintf (3, "ext_rpc connection ready (%d)\n", CONN_INFO(C)->fd);
   /* Per-secret increment is NOT done here — this callback fires at connection
      acceptance, before the handshake identifies the secret (extra_int2 = 0).
@@ -131,7 +131,7 @@ int mtproto_ext_rpc_ready (connection_job_t C) {
 }
 
 int mtproto_ext_rpc_close (connection_job_t C, int who) {
-  assert ((unsigned) CONN_INFO(C)->fd < MAX_CONNECTIONS);
+  assert ((unsigned) CONN_INFO(C)->fd < (unsigned) max_connection_fd);
   vkprintf (3, "ext_rpc connection closing (%d) by %d\n", CONN_INFO(C)->fd, who);
   int sid = TCP_RPC_DATA(C)->extra_int2;
   if (sid > 0 && sid <= EXT_SECRET_MAX_SLOTS) {
@@ -638,7 +638,7 @@ int http_send_message (JOB_REF_ARG (C), struct tl_in_state *tlio_in, int flags) 
 
   assert (CONN_INFO(C)->status == conn_working && CONN_INFO(C)->pending_queries == 1);
 
-  assert ((unsigned) CONN_INFO(C)->fd < MAX_CONNECTIONS);
+  assert ((unsigned) CONN_INFO(C)->fd < (unsigned) max_connection_fd);
   vkprintf (3, "detaching http connection (%d)\n", CONN_INFO(C)->fd);
 
   struct ext_connection *Ex = get_ext_connection_by_in_fd (CONN_INFO(C)->fd);

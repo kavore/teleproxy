@@ -121,6 +121,7 @@ extern struct in_addr settings_addr;
 int server_socket (int port, struct in_addr in_addr, int backlog, int mode);
 int client_socket (in_addr_t in_addr, int port, int mode);
 int client_socket_ipv6 (const unsigned char in6_addr_ptr[16], int port, int mode);
+int client_socket_unix (const char *path);
 
 void maximize_sndbuf (int sfd, int max);
 void maximize_rcvbuf (int sfd, int max);

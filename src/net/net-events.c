@@ -37,6 +37,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -741,6 +742,37 @@ int client_socket_ipv6 (const unsigned char in6_addr_ptr[16], int port, int mode
   }
 
   return socket_fd;
+}
+
+int client_socket_unix (const char *path) {
+  if (!path || !*path) return -1;
+  size_t plen = strlen (path);
+  if (plen >= sizeof (((struct sockaddr_un *)0)->sun_path)) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+  int fd = socket (AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return -1;
+  int flags;
+  if ((flags = fcntl (fd, F_GETFL, 0)) < 0 ||
+      fcntl (fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+    int saved = errno;
+    close (fd);
+    errno = saved;
+    return -1;
+  }
+  struct sockaddr_un addr;
+  memset (&addr, 0, sizeof addr);
+  addr.sun_family = AF_UNIX;
+  memcpy (addr.sun_path, path, plen + 1);
+  if (connect (fd, (struct sockaddr *)&addr, sizeof addr) == -1 &&
+      errno != EINPROGRESS) {
+    int saved = errno;
+    close (fd);
+    errno = saved;
+    return -1;
+  }
+  return fd;
 }
 
 unsigned get_my_ipv4 (void) {

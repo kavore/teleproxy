@@ -80,7 +80,7 @@ static double cur_accept_rate_remaining;
 static double cur_accept_rate_time;
 static int max_connection;
 static int conn_generation;
-static int max_connection_fd = MAX_CONNECTIONS;
+int max_connection_fd = MAX_CONNECTIONS;
 
 int active_special_connections, max_special_connections = MAX_CONNECTIONS;
 
@@ -639,6 +639,16 @@ connection_job_t alloc_new_connection (int cfd, conn_target_job_t CTJ, listening
     c->our_port = ntohs (self.a4.sin_port);
     assert (peer);
     c->remote_ip = peer;
+  } else if (self.a4.sin_family == AF_UNIX) {
+    /* AF_UNIX outbound (e.g. fake-TLS backend over unix socket):
+       no IP/port fields to record. The connection struct was zeroed
+       by create_async_job, so our_ip/our_port/remote_ip/remote_ipv6
+       remain 0. All sockaddr_* families share sa_family at offset 0,
+       so reading self.a4.sin_family when the fd is AF_UNIX yields the
+       correct value even though sockaddr_un overflows the union — the
+       kernel truncated the write to the buffer size but wrote the
+       family byte first. */
+    assert (!peer);
   } else {
     assert (self.a6.sin6_family == AF_INET6);
     assert (!peer);

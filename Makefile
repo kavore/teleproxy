@@ -79,7 +79,7 @@ DEPDIRS := ${DEP} $(addprefix ${DEP}/,${PROJECTS})
 ALLDIRS := ${DEPDIRS} ${OBJDIRS}
 
 
-.PHONY:	all clean lint tests test test-tls test-multi-secret test-secret-limit test-secret-quota test-rate-limit test-top-ips test-ip-acl test-drs-delays test-cdn-dc test-ipv6-direct test-dc-lookup test-config-reload test-secret-drain test-check test-link test-link-ip test-stats-port test-install-config test-proxy-protocol test-dc-probes docker-image-amd64 docker-run-help-amd64 docker-image-arm64 docker-run-help-arm64 fuzz fuzz-run
+.PHONY:	all clean lint tests test test-tls test-tls-unix test-multi-secret test-secret-limit test-secret-quota test-rate-limit test-top-ips test-ip-acl test-drs-delays test-cdn-dc test-ipv6-direct test-dc-lookup test-config-reload test-secret-drain test-check test-link test-link-ip test-stats-port test-install-config test-proxy-protocol test-dc-probes docker-image-amd64 docker-run-help-amd64 docker-image-arm64 docker-run-help-arm64 fuzz fuzz-run
 
 EXELIST	:= ${EXE}/teleproxy
 
@@ -208,6 +208,24 @@ test-tls:
 		docker compose -f tests/docker-compose.tls-test.yml logs teleproxy; \
 		docker compose -f tests/docker-compose.tls-test.yml down; exit 1)
 	docker compose -f tests/docker-compose.tls-test.yml down
+
+test-tls-unix:
+	@if [ -z "$$TELEPROXY_SECRET" ]; then \
+		export TELEPROXY_SECRET=$$(head -c 16 /dev/urandom | xxd -ps); \
+		echo "Generated TELEPROXY_SECRET: $$TELEPROXY_SECRET"; \
+	fi && \
+	export TELEPROXY_SECRET=$${TELEPROXY_SECRET:-$$(head -c 16 /dev/urandom | xxd -ps)} && \
+	echo "Using secret: $$TELEPROXY_SECRET" && \
+	timeout 300s docker compose -f tests/docker-compose.tls-unix-test.yml up --build --exit-code-from tester || \
+		(echo "TLS unix-socket test timed out or failed"; \
+		docker compose -f tests/docker-compose.tls-unix-test.yml logs teleproxy; \
+		docker compose -f tests/docker-compose.tls-unix-test.yml down -v; exit 1)
+	@echo "Checking teleproxy logs for unix-socket allocation markers..."
+	@docker compose -f tests/docker-compose.tls-unix-test.yml logs teleproxy 2>&1 | grep -q "ExtConnectionHead: allocated 200000" || \
+		(echo "FAIL: expected allocation log line not found"; exit 1)
+	@docker compose -f tests/docker-compose.tls-unix-test.yml logs teleproxy 2>&1 | grep -q "Proxy domain: .*@unix:" || \
+		(echo "FAIL: expected @unix: proxy-domain log line not found"; exit 1)
+	docker compose -f tests/docker-compose.tls-unix-test.yml down -v
 
 test-multi-secret:
 	@export TELEPROXY_SECRET_1=$$(head -c 16 /dev/urandom | xxd -ps) && \

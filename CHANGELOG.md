@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- `-D <domain>@unix:<path>` — fake-TLS backend can now be an AF_UNIX
+  stream socket instead of TCP. Eliminates loopback conntrack overhead
+  on high-traffic proxies. TLS 1.3 verification and response-size
+  mimicry work the same as for TCP backends.
+- `ExtConnectionHead` is now heap-allocated from `max_connection_fd`
+  at startup, allowing the `-c` flag to raise the per-worker connection
+  ceiling above the legacy compile-time `MAX_CONNECTIONS` (65536).
+
+### Fixed
+
+- `-c` flag now actually controls the per-worker hard ceiling. Prior
+  to this release, the compile-time `MAX_CONNECTIONS` static array
+  bound the ceiling at 65536 regardless of the runtime flag.
+
 ## [4.10.0]
 
 Graceful connection draining on secret removal (#45).

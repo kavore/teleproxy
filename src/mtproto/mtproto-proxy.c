@@ -222,7 +222,21 @@ long long per_secret_drain_forced[EXT_SECRET_MAX_SLOTS];
 
 struct ext_connection_ref OutExtConnections[EXT_CONN_TABLE_SIZE];
 struct ext_connection *InExtConnectionHash[EXT_CONN_HASH_SIZE];
-struct ext_connection ExtConnectionHead[MAX_CONNECTIONS];
+struct ext_connection *ExtConnectionHead;
+
+static void init_ext_connection_head (void) {
+  assert (ExtConnectionHead == NULL);
+  assert (max_connection_fd > 0);
+  size_t bytes = (size_t) max_connection_fd * sizeof (struct ext_connection);
+  ExtConnectionHead = calloc ((size_t) max_connection_fd, sizeof (struct ext_connection));
+  if (!ExtConnectionHead) {
+    kprintf ("fatal: cannot allocate ExtConnectionHead for %d connections (%zu bytes)\n",
+             max_connection_fd, bytes);
+    exit (1);
+  }
+  vkprintf (0, "ExtConnectionHead: allocated %d slots (%zu MB)\n",
+            max_connection_fd, bytes >> 20);
+}
 
 void lru_delete_ext_conn (struct ext_connection *Ext);
 
@@ -239,7 +253,7 @@ static inline int ext_conn_hash (int in_fd, long long in_conn_id) {
 // returns the only ext_connection with given in_fd
 struct ext_connection *get_ext_connection_by_in_fd (int in_fd) {
   check_engine_class ();
-  assert ((unsigned) in_fd < MAX_CONNECTIONS);
+  assert ((unsigned) in_fd < (unsigned) max_connection_fd);
   struct ext_connection *H = &ExtConnectionHead[in_fd];
   struct ext_connection *Ex = H->i_next;
   assert (H->i_next == H->i_prev);
@@ -300,7 +314,7 @@ struct ext_connection *get_ext_connection_by_in_conn_id (int in_fd, int in_gen, 
   cur->in_fd = in_fd;
   cur->in_gen = in_gen;
   cur->in_conn_id = in_conn_id;
-  assert ((unsigned) in_fd < MAX_CONNECTIONS);
+  assert ((unsigned) in_fd < (unsigned) max_connection_fd);
   if (in_fd) {
     struct ext_connection *H = &ExtConnectionHead[in_fd];
     if (!H->i_next) {
@@ -344,7 +358,7 @@ struct ext_connection *create_ext_connection (connection_job_t CI, long long in_
   struct ext_connection *Ex = get_ext_connection_by_in_conn_id (CONN_INFO(CI)->fd, CONN_INFO(CI)->generation, in_conn_id, 2, 0);
   assert (Ex && "ext_connection already exists");
   assert (!Ex->out_fd && !Ex->o_next && !Ex->auth_key_id);
-  assert (!CO || (unsigned) CONN_INFO(CO)->fd < MAX_CONNECTIONS);
+  assert (!CO || (unsigned) CONN_INFO(CO)->fd < (unsigned) max_connection_fd);
   assert (CO != CI);
   if (CO) {
     struct ext_connection *H = &ExtConnectionHead[CONN_INFO(CO)->fd];
@@ -367,7 +381,7 @@ void remove_ext_connection (struct ext_connection *Ex, int send_notifications) {
   assert (Ex->out_conn_id);
   assert (Ex == find_ext_connection_by_out_conn_id (Ex->out_conn_id));
   if (Ex->out_fd) {
-    assert ((unsigned) Ex->out_fd < MAX_CONNECTIONS);
+    assert ((unsigned) Ex->out_fd < (unsigned) max_connection_fd);
     assert (Ex->o_next);
     if (send_notifications & 1) {
       connection_job_t CO = connection_get_by_fd_generation (Ex->out_fd, Ex->out_gen);
@@ -377,7 +391,7 @@ void remove_ext_connection (struct ext_connection *Ex, int send_notifications) {
     }
   }
   if (Ex->in_fd) {
-    assert ((unsigned) Ex->in_fd < MAX_CONNECTIONS);
+    assert ((unsigned) Ex->in_fd < (unsigned) max_connection_fd);
     assert (Ex->i_next);
     if (send_notifications & 2) {
       connection_job_t CI = connection_get_by_fd_generation (Ex->in_fd, Ex->in_gen);
@@ -652,7 +666,7 @@ int mtfront_client_ready (connection_job_t C) {
   check_engine_class ();
   struct tcp_rpc_data *D = TCP_RPC_DATA(C);
   int fd = CONN_INFO(C)->fd;
-  assert ((unsigned) fd < MAX_CONNECTIONS);
+  assert ((unsigned) fd < (unsigned) max_connection_fd);
   assert (!D->extra_int);
   D->extra_int = get_conn_tag (C);
   vkprintf (1, "Connected to RPC Middle-End (fd=%d)\n", fd);
@@ -671,7 +685,7 @@ int mtfront_client_close (connection_job_t C, int who) {
   check_engine_class ();
   struct tcp_rpc_data *D = TCP_RPC_DATA(C);
   int fd = CONN_INFO(C)->fd;
-  assert ((unsigned) fd < MAX_CONNECTIONS);
+  assert ((unsigned) fd < (unsigned) max_connection_fd);
   vkprintf (1, "Disconnected from RPC Middle-End (fd=%d)\n", fd);
   if (D->extra_int) {
     assert (D->extra_int == get_conn_tag (C));
@@ -698,7 +712,7 @@ int mtproto_proxy_rpc_ready (connection_job_t C) {
   check_engine_class ();
   struct tcp_rpc_data *D = TCP_RPC_DATA(C);
   int fd = CONN_INFO(C)->fd;
-  assert ((unsigned) fd < MAX_CONNECTIONS);
+  assert ((unsigned) fd < (unsigned) max_connection_fd);
   vkprintf (3, "proxy_rpc connection ready (%d)\n", fd);
   struct ext_connection *H = &ExtConnectionHead[fd];
   assert (!H->i_prev);
@@ -714,7 +728,7 @@ int mtproto_proxy_rpc_close (connection_job_t C, int who) {
   check_engine_class ();
   struct tcp_rpc_data *D = TCP_RPC_DATA(C);
   int fd = CONN_INFO(C)->fd;
-  assert ((unsigned) fd < MAX_CONNECTIONS);
+  assert ((unsigned) fd < (unsigned) max_connection_fd);
   vkprintf (3, "proxy_rpc connection closing (%d) by %d\n", fd, who);
   if (D->extra_int) {
     assert (D->extra_int == -get_conn_tag (C));
@@ -830,7 +844,7 @@ int forward_tcp_query (struct tl_in_state *tlio_in, connection_job_t c, conn_tar
   }
 
   if (Ex) {
-    assert (Ex->out_fd > 0 && Ex->out_fd < MAX_CONNECTIONS);
+    assert (Ex->out_fd > 0 && Ex->out_fd < max_connection_fd);
     d = connection_get_by_fd_generation (Ex->out_fd, Ex->out_gen);
     if (!d || !CONN_INFO(d)->target) {
       if (d) {
@@ -1198,6 +1212,7 @@ static double drain_sweep_gw (void *unused) {
 }
 
 void mtfront_pre_loop (void) {
+  init_ext_connection_head ();
   int i, enable_ipv6 = (ipv6_enabled && !engine_state->settings_addr.s_addr) ? SM_IPV6 : 0;
   if (domain_count == 0) {
     tcp_maximize_buffers = 1;
@@ -1572,7 +1587,7 @@ void mtfront_prepare_parse_options (void) {
   parse_option ("http-stats", no_argument, 0, 2000, "allow http server to answer on stats queries");
   parse_option ("mtproto-secret", required_argument, 0, 'S', "16-byte secret in hex, optionally :LABEL:LIMIT (e.g. -S abcdef01234567890abcdef012345678:myapp:1000)");
   parse_option ("proxy-tag", required_argument, 0, 'P', "16-byte proxy tag in hex mode to be passed along with all forwarded queries");
-  parse_option ("domain", required_argument, 0, 'D', "adds allowed domain or host:port for TLS-transport mode, disables other transports; can be specified more than once");
+  parse_option ("domain", required_argument, 0, 'D', "adds allowed domain or host:port (TCP backend) or domain@unix:path (unix-socket backend) for TLS-transport mode, disables other transports; can be specified more than once");
   parse_option ("max-special-connections", required_argument, 0, 'C', "sets maximal number of accepted client connections per worker");
   parse_option ("window-clamp", required_argument, 0, 'W', "sets window clamp for client TCP connections");
   parse_option ("http-ports", required_argument, 0, 'H', "comma-separated list of client (HTTP) ports to listen");
