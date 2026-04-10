@@ -39,7 +39,7 @@ def assert_max_conn_from_stats():
     command line (via MAX_CONNECTIONS env -> TOML maxconn -> set_maxconn),
     this must read 200000.
     """
-    url = f"http://{TELEPROXY_HOST}:{TELEPROXY_STATS_PORT}/"
+    url = f"http://{TELEPROXY_HOST}:{TELEPROXY_STATS_PORT}/stats"
     deadline = time.time() + 30.0
     last_err = None
     body = None
