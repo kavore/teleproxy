@@ -744,29 +744,34 @@ static unsigned char *create_request (const char *domain) {
 static int update_domain_info (struct domain_info *info) {
   const char *domain = info->domain;
 
-  // Try parsing as a literal IP address first
+  int af = 0;
   struct in_addr addr4;
   struct in6_addr addr6;
-  int af = 0;
-  if (inet_pton (AF_INET, domain, &addr4) == 1) {
-    af = AF_INET;
-    info->target = addr4;
-    memset (info->target_ipv6, 0, sizeof (info->target_ipv6));
-  } else if (inet_pton (AF_INET6, domain, &addr6) == 1) {
-    af = AF_INET6;
-    info->target.s_addr = 0;
-    memcpy (info->target_ipv6, &addr6, sizeof (info->target_ipv6));
-  }
-
   struct hostent *host = NULL;
-  if (!af) {
-    host = kdb_gethostbyname (domain);
-    if (host == NULL || host->h_addr == NULL) {
-      kprintf ("Failed to resolve host %s\n", domain);
-      return 0;
+
+  if (info->unix_path != NULL) {
+    af = AF_UNIX;
+  } else {
+    // Try parsing as a literal IP address first
+    if (inet_pton (AF_INET, domain, &addr4) == 1) {
+      af = AF_INET;
+      info->target = addr4;
+      memset (info->target_ipv6, 0, sizeof (info->target_ipv6));
+    } else if (inet_pton (AF_INET6, domain, &addr6) == 1) {
+      af = AF_INET6;
+      info->target.s_addr = 0;
+      memcpy (info->target_ipv6, &addr6, sizeof (info->target_ipv6));
     }
-    assert (host->h_addrtype == AF_INET || host->h_addrtype == AF_INET6);
-    af = host->h_addrtype;
+
+    if (!af) {
+      host = kdb_gethostbyname (domain);
+      if (host == NULL || host->h_addr == NULL) {
+        kprintf ("Failed to resolve host %s\n", domain);
+        return 0;
+      }
+      assert (host->h_addrtype == AF_INET || host->h_addrtype == AF_INET6);
+      af = host->h_addrtype;
+    }
   }
 
   fd_set read_fd;
@@ -780,7 +785,7 @@ static int update_domain_info (struct domain_info *info) {
   int sockets[TRIES];
   int i;
   for (i = 0; i < TRIES; i++) {
-    sockets[i] = socket (af, SOCK_STREAM, IPPROTO_TCP);
+    sockets[i] = socket (af, SOCK_STREAM, (af == AF_UNIX) ? 0 : IPPROTO_TCP);
     if (sockets[i] < 0) {
       kprintf ("Failed to open socket for %s: %s\n", domain, strerror (errno));
       return 0;
@@ -791,7 +796,14 @@ static int update_domain_info (struct domain_info *info) {
     }
 
     int e_connect;
-    if (af == AF_INET) {
+    if (af == AF_UNIX) {
+      struct sockaddr_un addr;
+      memset (&addr, 0, sizeof (addr));
+      addr.sun_family = AF_UNIX;
+      /* length already validated at parse time */
+      memcpy (addr.sun_path, info->unix_path, strlen (info->unix_path) + 1);
+      e_connect = connect (sockets[i], (struct sockaddr *)&addr, sizeof (addr));
+    } else if (af == AF_INET) {
       if (host) {
         info->target = *((struct in_addr *) host->h_addr);
         memset (info->target_ipv6, 0, sizeof (info->target_ipv6));
@@ -821,7 +833,11 @@ static int update_domain_info (struct domain_info *info) {
     }
 
     if (e_connect == -1 && errno != EINPROGRESS) {
-      kprintf ("Failed to connect to %s: %s\n", domain, strerror (errno));
+      if (af == AF_UNIX) {
+        kprintf ("Failed to connect to %s@unix:%s: %s\n", domain, info->unix_path, strerror (errno));
+      } else {
+        kprintf ("Failed to connect to %s: %s\n", domain, strerror (errno));
+      }
       return 0;
     }
   }
