@@ -1067,44 +1067,66 @@ void tcp_rpc_add_proxy_domain (const char *domain) {
   assert (info != NULL);
   info->port = 443;
 
-  const char *host_start = domain;
-  const char *host_end = NULL;
-
-  if (domain[0] == '[') {
-    // [IPv6]:port format
-    host_end = strchr (domain, ']');
-    if (host_end == NULL) {
-      kprintf ("Invalid IPv6 address: %s\n", domain);
+  const char *at_unix = strstr (domain, "@unix:");
+  if (at_unix != NULL && at_unix[6] != '\0') {
+    size_t sni_len = (size_t) (at_unix - domain);
+    if (sni_len == 0) {
+      kprintf ("Invalid domain spec: empty SNI hostname before @unix: in %s\n", domain);
       free (info);
       return;
     }
-    host_start = domain + 1;
-    const char *after_bracket = host_end + 1;
-    if (*after_bracket == ':') {
-      info->port = atoi (after_bracket + 1);
+    const char *path = at_unix + 6;
+    size_t plen = strlen (path);
+    if (plen >= sizeof (((struct sockaddr_un *)0)->sun_path)) {
+      kprintf ("Invalid domain spec: unix socket path too long (%zu bytes, max %zu) in %s\n",
+               plen, sizeof (((struct sockaddr_un *)0)->sun_path) - 1, domain);
+      free (info);
+      return;
     }
-    info->domain = strndup (host_start, host_end - host_start);
+    info->domain = strndup (domain, sni_len);
+    info->unix_path = strdup (path);
+    info->port = 0;
+    kprintf ("Proxy domain: %s@unix:%s\n", info->domain, info->unix_path);
   } else {
-    // Check for host:port — but only if the last colon has digits after it
-    // and there is at most one colon (to avoid matching bare IPv6 like ::1)
-    const char *colon = strrchr (domain, ':');
-    if (colon != NULL && strchr (domain, ':') == colon) {
-      // Exactly one colon — treat as host:port
-      info->port = atoi (colon + 1);
-      info->domain = strndup (domain, colon - domain);
+    const char *host_start = domain;
+    const char *host_end = NULL;
+
+    if (domain[0] == '[') {
+      // [IPv6]:port format
+      host_end = strchr (domain, ']');
+      if (host_end == NULL) {
+        kprintf ("Invalid IPv6 address: %s\n", domain);
+        free (info);
+        return;
+      }
+      host_start = domain + 1;
+      const char *after_bracket = host_end + 1;
+      if (*after_bracket == ':') {
+        info->port = atoi (after_bracket + 1);
+      }
+      info->domain = strndup (host_start, host_end - host_start);
     } else {
-      info->domain = strdup (domain);
+      // Check for host:port — but only if the last colon has digits after it
+      // and there is at most one colon (to avoid matching bare IPv6 like ::1)
+      const char *colon = strrchr (domain, ':');
+      if (colon != NULL && strchr (domain, ':') == colon) {
+        // Exactly one colon — treat as host:port
+        info->port = atoi (colon + 1);
+        info->domain = strndup (domain, colon - domain);
+      } else {
+        info->domain = strdup (domain);
+      }
     }
-  }
 
-  if (info->port <= 0 || info->port > 65535) {
-    kprintf ("Invalid port in domain spec: %s\n", domain);
-    free ((void *)info->domain);
-    free (info);
-    return;
-  }
+    if (info->port <= 0 || info->port > 65535) {
+      kprintf ("Invalid port in domain spec: %s\n", domain);
+      free ((void *)info->domain);
+      free (info);
+      return;
+    }
 
-  kprintf ("Proxy domain: %s:%d\n", info->domain, info->port);
+    kprintf ("Proxy domain: %s:%d\n", info->domain, info->port);
+  }
 
   struct domain_info **bucket = get_domain_info_bucket (info->domain, strlen (info->domain));
   info->next = *bucket;
