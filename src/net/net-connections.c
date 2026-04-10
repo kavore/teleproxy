@@ -80,7 +80,7 @@ static double cur_accept_rate_remaining;
 static double cur_accept_rate_time;
 static int max_connection;
 static int conn_generation;
-static int max_connection_fd = MAX_CONNECTIONS;
+int max_connection_fd = MAX_CONNECTIONS;
 
 int active_special_connections, max_special_connections = MAX_CONNECTIONS;
 

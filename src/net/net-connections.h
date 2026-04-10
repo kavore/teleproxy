@@ -441,6 +441,7 @@ void tcp_set_max_accept_rate (int rate);
 void tcp_set_max_connections (int maxconn);
 
 extern int max_special_connections, active_special_connections;
+extern int max_connection_fd;
 
 #define MAX_NAT_INFO_RULES	16
 extern int nat_info_rules;
