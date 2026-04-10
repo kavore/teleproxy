@@ -222,7 +222,21 @@ long long per_secret_drain_forced[EXT_SECRET_MAX_SLOTS];
 
 struct ext_connection_ref OutExtConnections[EXT_CONN_TABLE_SIZE];
 struct ext_connection *InExtConnectionHash[EXT_CONN_HASH_SIZE];
-struct ext_connection ExtConnectionHead[MAX_CONNECTIONS];
+struct ext_connection *ExtConnectionHead;
+
+static void init_ext_connection_head (void) {
+  assert (ExtConnectionHead == NULL);
+  assert (max_connection_fd > 0);
+  size_t bytes = (size_t) max_connection_fd * sizeof (struct ext_connection);
+  ExtConnectionHead = calloc ((size_t) max_connection_fd, sizeof (struct ext_connection));
+  if (!ExtConnectionHead) {
+    kprintf ("fatal: cannot allocate ExtConnectionHead for %d connections (%zu bytes)\n",
+             max_connection_fd, bytes);
+    exit (1);
+  }
+  vkprintf (0, "ExtConnectionHead: allocated %d slots (%zu MB)\n",
+            max_connection_fd, bytes >> 20);
+}
 
 void lru_delete_ext_conn (struct ext_connection *Ext);
 
@@ -1198,6 +1212,7 @@ static double drain_sweep_gw (void *unused) {
 }
 
 void mtfront_pre_loop (void) {
+  init_ext_connection_head ();
   int i, enable_ipv6 = (ipv6_enabled && !engine_state->settings_addr.s_addr) ? SM_IPV6 : 0;
   if (domain_count == 0) {
     tcp_maximize_buffers = 1;
