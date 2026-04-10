@@ -1,0 +1,67 @@
+services:
+  tls-backend-unix:
+    build: ./tls-backend-unix
+    volumes:
+      - nginx-mtproxy-sock:/var/run/nginx-mtproxy
+    networks:
+      tlsunixnet:
+        ipv4_address: 172.31.0.10
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /var/run/nginx-mtproxy/backend.sock"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 3s
+
+  teleproxy:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        DEBUG_TOOLS: "1"
+    environment:
+      - SECRET=${TELEPROXY_SECRET:-d41d8cd98f00b204e9800998ecf8427e}
+      - PORT=8443
+      - STATS_PORT=8888
+      # EE_DOMAIN contains the full domain@unix:path spec understood by start.sh
+      # and passed verbatim into the TOML config as: domain = "..."
+      # The @unix: suffix routes teleproxy to the shared unix socket instead of TCP.
+      - EE_DOMAIN=tls-backend-unix@unix:/var/run/nginx-mtproxy/backend.sock
+      - WORKERS=0
+      # MAX_CONNECTIONS is the env var name start.sh reads (maps to TOML maxconn).
+      # 200000 exercises the runtime max_connection_fd allocation path.
+      - MAX_CONNECTIONS=200000
+    volumes:
+      - nginx-mtproxy-sock:/var/run/nginx-mtproxy
+    networks:
+      - tlsunixnet
+    depends_on:
+      tls-backend-unix:
+        condition: service_healthy
+
+  tester:
+    build: .
+    environment:
+      - TELEPROXY_HOST=teleproxy
+      - TELEPROXY_PORT=8443
+      - TELEPROXY_STATS_PORT=8888
+      - TELEPROXY_SECRET=${TELEPROXY_SECRET:-d41d8cd98f00b204e9800998ecf8427e}
+      # EE_DOMAIN for the tester must be just the SNI hostname (no @unix: suffix)
+      # so that Telethon/test code uses it as the TLS server name.
+      - EE_DOMAIN=tls-backend-unix
+      - EXPECTED_MAX_CONN=200000
+    networks:
+      - tlsunixnet
+    depends_on:
+      - teleproxy
+    command: ["sh", "-c", "python test_tls_unix_e2e.py"]
+
+volumes:
+  nginx-mtproxy-sock:
+
+networks:
+  tlsunixnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
