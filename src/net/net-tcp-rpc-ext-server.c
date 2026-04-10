@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/un.h>
 
 #include <openssl/bn.h>
 #include <openssl/crypto.h>
@@ -508,6 +509,7 @@ struct domain_info {
   short server_hello_encrypted_size;
   char use_random_encrypted_size;
   char is_reversed_extension_order;
+  const char *unix_path;    /* NULL for TCP backends, absolute path for AF_UNIX */
   struct domain_info *next;
 };
 
