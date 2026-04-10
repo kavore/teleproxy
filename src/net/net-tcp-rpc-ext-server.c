@@ -1292,6 +1292,37 @@ static int proxy_connection (connection_job_t C, const struct domain_info *info)
 
   assert (check_conn_functions (&ct_proxy_pass, 0) >= 0);
 
+  if (info->unix_path != NULL) {
+    int cfd = client_socket_unix (info->unix_path);
+    if (cfd < 0) {
+      kprintf ("failed to connect to %s@unix:%s: %m\n", info->domain, info->unix_path);
+      fail_connection (C, -27);
+      return 0;
+    }
+
+    c->type->crypto_free (C);
+    job_incref (C);
+    unsigned char zero_ipv6[16] = {};
+    job_t EJ = alloc_new_connection (cfd, NULL, NULL, ct_outbound, &ct_proxy_pass, C,
+                                     0, zero_ipv6, 0);
+
+    if (!EJ) {
+      kprintf ("failed to create proxy pass connection to %s@unix:%s\n",
+               info->domain, info->unix_path);
+      job_decref_f (C);
+      fail_connection (C, -37);
+      return 0;
+    }
+
+    c->type = &ct_proxy_pass;
+    c->extra = job_incref (EJ);
+
+    assert (CONN_INFO(EJ)->io_conn);
+    unlock_job (JOB_REF_PASS (EJ));
+
+    return c->type->parse_execute (C);
+  }
+
   const char zero[16] = {};
   if (info->target.s_addr == 0 && !memcmp (info->target_ipv6, zero, 16)) {
     vkprintf (0, "failed to proxy request to %s\n", info->domain);
