@@ -300,7 +300,7 @@ void tcp_rpcs_drain_force_close_for_slot (int slot_id) {
   if (slot_id < ext_secret_pinned || slot_id >= EXT_SECRET_MAX_SLOTS) { return; }
   int target = slot_id + 1;
   int closed = 0;
-  for (int fd = 0; fd < MAX_CONNECTIONS; fd++) {
+  for (int fd = 0; fd < max_connection_fd; fd++) {
     connection_job_t C = connection_get_by_fd (fd);
     if (!C) { continue; }
     if (C->j_execute == do_listening_connection_job) {
