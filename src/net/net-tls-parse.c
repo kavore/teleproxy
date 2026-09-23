@@ -81,7 +81,12 @@ int tls_check_server_hello (const unsigned char *response, int len,
   if (memcmp (response + 44, request_session_id, 32) != 0) {
     FAIL("TLS <= 1.2: expected mirrored session_id");
   }
-  EXPECT_STR(76, "\x13\x01\x00", "TLS <= 1.2: expected x25519 as a chosen cipher");
+  /* cipher (2) + compression (1); do not fold the extensions-length high byte
+     into this check -- with an MLKEM key_share extensions exceed 255 bytes. */
+  EXPECT_STR(76, "\x13", "TLS <= 1.2: expected a TLS 1.3 cipher");
+  if (response[77] < 0x01 || response[77] > 0x03 || response[78] != 0x00) {
+    FAIL("TLS <= 1.2: expected a TLS 1.3 cipher");
+  }
   pos += 74;
   int extensions_length = tls_read_length (response, &pos);
   if (extensions_length + 76 != server_hello_length) {
