@@ -1695,18 +1695,32 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
         c->flags |= C_IS_TLS;
         c->left_tls_packet_length = -1;
 
+        /* Mirror the client's key_share group.  iOS/macOS Telegram and modern
+           browsers offer X25519MLKEM768; a real OpenSSL >= 3.5 backend answers
+           with it (1120-byte share, 1210-byte record).  Answering plain X25519
+           to a PQ offer is a fingerprint TSPU drops.  Bytes are random either
+           way -- the client never validates them, the HMAC covers the record. */
+        int use_mlkem = tls_client_hello_offers_mlkem (client_hello, read_len);
+        int key_share_len = use_mlkem ? 1120 : 32;
+        int server_hello_len = 127 + (key_share_len - 32);  /* record incl. 5-byte header */
         int encrypted_size = get_domain_server_hello_encrypted_size (info);
-        int response_size = 127 + 6 + 5 + encrypted_size;
+        int response_size = server_hello_len + 6 + 5 + encrypted_size;
         unsigned char *buffer = malloc (32 + response_size);
         assert (buffer != NULL);
         memcpy (buffer, client_random, 32);
         unsigned char *response_buffer = buffer + 32;
         memcpy (response_buffer, "\x16\x03\x03\x00\x7a\x02\x00\x00\x76\x03\x03", 11);
+        response_buffer[3] = (server_hello_len - 5) >> 8;
+        response_buffer[4] = (server_hello_len - 5) & 0xff;
+        response_buffer[7] = (server_hello_len - 9) >> 8;   /* handshake length is 3 bytes: [6..8] */
+        response_buffer[8] = (server_hello_len - 9) & 0xff;
         memset (response_buffer + 11, '\0', 32);
         response_buffer[43] = '\x20';
         memcpy (response_buffer + 44, client_hello + 44, 32);
         memcpy (response_buffer + 76, "\x13\x01\x00\x00\x2e", 5);
         response_buffer[77] = cipher_suite_id;
+        response_buffer[79] = (46 + (key_share_len - 32)) >> 8;
+        response_buffer[80] = (46 + (key_share_len - 32)) & 0xff;
 
         int pos = 81;
         int tls_server_extensions[3] = {0x33, 0x2b, -1};
@@ -1718,10 +1732,16 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
         int i;
         for (i = 0; tls_server_extensions[i] != -1; i++) {
           if (tls_server_extensions[i] == 0x33) {
-            assert (pos + 40 <= response_size);
-            memcpy (response_buffer + pos, "\x00\x33\x00\x24\x00\x1d\x00\x20", 8);
-            generate_public_key (response_buffer + pos + 8);
-            pos += 40;
+            assert (pos + 8 + key_share_len <= response_size);
+            if (use_mlkem) {
+              memcpy (response_buffer + pos, "\x00\x33\x04\x64\x11\xec\x04\x60", 8);
+              RAND_bytes (response_buffer + pos + 8, 1088);
+              generate_public_key (response_buffer + pos + 8 + 1088);
+            } else {
+              memcpy (response_buffer + pos, "\x00\x33\x00\x24\x00\x1d\x00\x20", 8);
+              generate_public_key (response_buffer + pos + 8);
+            }
+            pos += 8 + key_share_len;
           } else if (tls_server_extensions[i] == 0x2b) {
             assert (pos + 5 <= response_size);
             memcpy (response_buffer + pos, "\x00\x2b\x00\x02\x03\x04", 6);
@@ -1730,8 +1750,8 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
             assert (0);
           }
         }
-        assert (pos == 127);
-        memcpy (response_buffer + 127, "\x14\x03\x03\x00\x01\x01\x17\x03\x03", 9);
+        assert (pos == server_hello_len);
+        memcpy (response_buffer + pos, "\x14\x03\x03\x00\x01\x01\x17\x03\x03", 9);
         pos += 9;
         response_buffer[pos++] = encrypted_size / 256;
         response_buffer[pos++] = encrypted_size % 256;
@@ -1747,12 +1767,12 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
            is queued, producing separate TCP segments.  This defeats DPI
            that pattern-matches the full handshake in a single packet. */
         struct raw_message *m1 = calloc (sizeof (struct raw_message), 1);
-        rwm_create (m1, response_buffer, 127);              /* ServerHello record */
+        rwm_create (m1, response_buffer, server_hello_len); /* ServerHello record */
         mpq_push_w (c->out_queue, m1, 0);
         job_signal (JOB_REF_CREATE_PASS (C), JS_RUN);
 
         struct raw_message *m2 = calloc (sizeof (struct raw_message), 1);
-        rwm_create (m2, response_buffer + 127, response_size - 127); /* CCS + AppData */
+        rwm_create (m2, response_buffer + server_hello_len, response_size - server_hello_len); /* CCS + AppData */
         mpq_push_w (c->out_queue, m2, 0);
         job_signal (JOB_REF_CREATE_PASS (C), JS_RUN);
 

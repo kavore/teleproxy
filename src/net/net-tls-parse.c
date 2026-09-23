@@ -102,7 +102,10 @@ int tls_check_server_hello (const unsigned char *response, int len,
     if (pos + extension_length > 5 + server_hello_length) {
       FAIL("Receive wrong extension length");
     }
-    if (extension_length != (extension_id == 0x33 ? 36 : 2)) {
+    /* key_share: 36 = x25519 (group 2 + len 2 + 32), 1124 = X25519MLKEM768
+       (group 2 + len 2 + 1120) from an OpenSSL >= 3.5 backend. */
+    if (extension_id == 0x2b ? extension_length != 2
+                             : (extension_length != 36 && extension_length != 1124)) {
       FAIL("Unexpected extension length");
     }
     pos += extension_length;
@@ -218,5 +221,45 @@ int tls_parse_client_hello_ciphers (const unsigned char *client_hello, int len,
     return -1;
   }
   *cipher_suite_id = client_hello[pos + 1];
+  return 0;
+}
+
+/* Returns 1 if the ClientHello key_share extension (0x33) carries an
+   X25519MLKEM768 (0x11ec) entry, 0 otherwise / on parse failure.
+   iOS/macOS Telegram and modern browsers send it; a real OpenSSL >= 3.5
+   backend answers with the same group, so the fake-TLS front must too. */
+int tls_client_hello_offers_mlkem (const unsigned char *client_hello, int len) {
+  int pos = 11 + 32;
+  if (pos + 1 > len) return 0;
+  pos += 1 + client_hello[pos];              /* session_id_len + session_id */
+  if (pos + 2 > len) return 0;
+  int cs_len = tls_read_length (client_hello, &pos);
+  pos += cs_len;
+  if (pos + 1 > len) return 0;
+  pos += 1 + client_hello[pos];              /* compression */
+  if (pos + 2 > len) return 0;
+  int ext_len = tls_read_length (client_hello, &pos);
+  int ext_end = pos + ext_len;
+  if (ext_end > len) return 0;
+  while (pos + 4 <= ext_end) {
+    int ext_id = tls_read_length (client_hello, &pos);
+    int ext_size = tls_read_length (client_hello, &pos);
+    if (pos + ext_size > ext_end) return 0;
+    if (ext_id == 0x33) {
+      int p = pos;
+      if (p + 2 > pos + ext_size) return 0;
+      int ks_len = tls_read_length (client_hello, &p);
+      int ks_end = p + ks_len;
+      if (ks_end > pos + ext_size) return 0;
+      while (p + 4 <= ks_end) {
+        int group = tls_read_length (client_hello, &p);
+        int klen = tls_read_length (client_hello, &p);
+        if (group == 0x11ec) return 1;
+        p += klen;
+      }
+      return 0;
+    }
+    pos += ext_size;
+  }
   return 0;
 }

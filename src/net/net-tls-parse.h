@@ -46,3 +46,6 @@ int tls_parse_sni (const unsigned char *client_hello, int len,
    Returns -1 on failure. */
 int tls_parse_client_hello_ciphers (const unsigned char *client_hello, int len,
                                     unsigned char *cipher_suite_id);
+
+/* 1 if ClientHello key_share offers X25519MLKEM768 (0x11ec), else 0. */
+int tls_client_hello_offers_mlkem (const unsigned char *client_hello, int len);
