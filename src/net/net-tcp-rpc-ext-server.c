@@ -1701,6 +1701,7 @@ int tcp_rpcs_compact_parse_execute (connection_job_t C) {
            to a PQ offer is a fingerprint TSPU drops.  Bytes are random either
            way -- the client never validates them, the HMAC covers the record. */
         int use_mlkem = tls_client_hello_offers_mlkem (client_hello, read_len);
+        vkprintf (1, "TLS ClientHello len=%d mlkem=%d from %s:%d\n", len, use_mlkem, show_remote_ip (C), c->remote_port);
         int key_share_len = use_mlkem ? 1120 : 32;
         int server_hello_len = 127 + (key_share_len - 32);  /* record incl. 5-byte header */
         int encrypted_size = get_domain_server_hello_encrypted_size (info);
